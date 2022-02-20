@@ -1790,6 +1790,7 @@ namespace System.Text.RegularExpressions.Tests
 
         public static IEnumerable<object[]> StressTestAntimirovMode_TestData()
         {
+            yield return new object[] { "(?:a|aa|[abc]?[ab]?[abcd]).{20}$", "aaa01234567890123456789", 23 };
             yield return new object[] { "(?:a|AA|BCD).{20}$", "a01234567890123456789", 21 };
             yield return new object[] { "(?:a.{20}|a.{10})bc$", "a01234567890123456789bc", 23 };
         }
