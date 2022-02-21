@@ -198,12 +198,10 @@ namespace System.Text.RegularExpressions.Symbolic
         // used in Antimirov mode only
         private readonly HashSet<int> _nfaStates = new();
         private readonly List<int> _nfaStatesList = new();
-        private readonly uint _prevCharKind;
 
         public CurrentState(DfaMatchingState<T> dfaMatchingState)
         {
             _builder = dfaMatchingState.Node._builder;
-            _prevCharKind = dfaMatchingState.PrevCharKind;
             if (_builder._antimirov)
             {
                 // Create NFA state set if the builder is in Antimirov mode
@@ -212,7 +210,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 {
                     // Create (possibly new) NFA states for all the members
                     // add their IDs to the current set of NFA states and into the list
-                    int nfaState = _builder.MkNfaState(member, _prevCharKind);
+                    int nfaState = _builder.MkNfaState(member, dfaMatchingState.PrevCharKind);
                     if (_nfaStates.Add(nfaState))
                         // the list maintains the original order in which states are added but avoids duplicates
                         // TBD: OrderedOr may need to rely on that order
