@@ -198,24 +198,53 @@ namespace System.Text.RegularExpressions.Symbolic
         private DfaMatchingState<T>? _dfaMatchingState;
 
         /// <summary>The set of NFA states.</summary>
-        private readonly HashSet<int> _nfaStates = new();
+        internal readonly HashSet<int>? _nfaStates;
         /// <summary>The list of NFA states, in order.</summary>
         /// <remarks>
         /// The contents of this list is the same as <see cref="_nfaStates"/>, but it's used for maintaining
         /// the order of the states whereas <see cref="_nfaStates"/> is used for O(1) lookup.
         /// </remarks>
-        private readonly List<int> _nfaStatesList = new();
-
+        internal List<int>? _nfaStatesList;
         /// <summary>Scratch list used temporarily to maintain the previous list of states.</summary>
-        private readonly List<int> _scratchNfaStatesList = new();
+        internal List<int>? _nfaStatesListScratch;
 
-        public CurrentState(DfaMatchingState<T> dfaMatchingState)
+        public CurrentState(DfaMatchingState<T> dfaMatchingState, SymbolicRegexMatcher.PerThreadData perThreadData)
         {
             _builder = dfaMatchingState.Node._builder;
 
             if (_builder._antimirov)
             {
-                // Create NFA state set if the builder is in Antimirov mode
+                // The builder is in NFA mode.
+
+                // Initialize _nfaStates, _nfaStatesList, and _nfaStatesListScratch  from the PerThreadData cache.
+                // We want to create these lists/sets once per runner, and so pass around the PerThreadData that
+                // caches them, enabling each CurrentState instance to use those cached objects.  For _nfaStates
+                // and _nfaStatesList, we need to clear the collections in case they were left with data in them.
+                // For _nfaStatesListScratch, it'll be cleared before it's used later and thus we needn't clear it now.
+
+                _nfaStates = perThreadData.NfaStateSet;
+                if (_nfaStates is not null)
+                {
+                    _nfaStates.Clear();
+                }
+                else
+                {
+                    _nfaStates = perThreadData.NfaStateSet = new();
+                }
+
+                _nfaStatesList = perThreadData.NfaStateList;
+                if (_nfaStatesList is not null)
+                {
+                    _nfaStatesList.Clear();
+                }
+                else
+                {
+                    _nfaStatesList = perThreadData.NfaStateList = new();
+                }
+
+                _nfaStatesListScratch = perThreadData.NfaStateListScratch ??= new();
+
+                // Create NFA state set.
                 Debug.Assert(dfaMatchingState.Node.Kind == SymbolicRegexNodeKind.Or && dfaMatchingState.Node._alts is not null);
                 foreach (SymbolicRegexNode<T> member in dfaMatchingState.Node._alts)
                 {
@@ -230,11 +259,15 @@ namespace System.Text.RegularExpressions.Symbolic
                     }
                 }
 
-                // Antimirov mode
+                // Store null into _dfaMatchingState to indicate we're in NFA mode.
                 _dfaMatchingState = null;
             }
             else
             {
+                _nfaStates = null;
+                _nfaStatesList = null;
+                _nfaStatesListScratch = null;
+
                 // Brzozowski mode
                 _dfaMatchingState = dfaMatchingState;
             }
@@ -247,7 +280,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 if (_dfaMatchingState is null)
                 {
                     // In Antimirov mode, check if any underlying core state starts with a line anchor.
-                    List<int> states = _nfaStatesList;
+                    List<int> states = _nfaStatesList!;
                     for (int i = 0; i < states.Count; i++)
                     {
                         if (_builder.GetCoreState(states[i]).StartsWithLineAnchor)
@@ -271,7 +304,7 @@ namespace System.Text.RegularExpressions.Symbolic
             if (_dfaMatchingState is null)
             {
                 // In Antimirov mode, check if any underlying core state is nullable.
-                List<int> states = _nfaStatesList;
+                List<int> states = _nfaStatesList!;
                 for (int i = 0; i < states.Count; i++)
                 {
                     if (_builder.GetCoreState(states[i]).IsNullable(nextCharKind))
@@ -290,11 +323,11 @@ namespace System.Text.RegularExpressions.Symbolic
 
         /// <summary>Gets whether this is a dead-end state, meaning there are no transitions possible out of the state.</summary>
         /// <remarks>In Antimirov mode, an empty set of states means that it is a deadend.</remarks>
-        public bool IsDeadend => _dfaMatchingState?.IsDeadend ?? _nfaStates.Count == 0;
+        public bool IsDeadend => _dfaMatchingState?.IsDeadend ?? _nfaStates!.Count == 0;
 
         /// <summary>Gets whether this is a nothing state, meaning it doesn't match.</summary>
         /// <remarks>In Antimirov mode, an empty set of states means that it is nothing.</remarks>
-        public bool IsNothing => _dfaMatchingState?.IsNothing ?? _nfaStates.Count == 0;
+        public bool IsNothing => _dfaMatchingState?.IsNothing ?? _nfaStates!.Count == 0;
 
         /// <summary>Gets the length of any fixed-length marker that exists for this state, or -1 if there is none.</summary>
         /// <summary>In Antimirov mode, there are no fixed-length markers.</summary>
@@ -306,7 +339,8 @@ namespace System.Text.RegularExpressions.Symbolic
 
         /// <summary>Take the transition to the next state.</summary>
         /// <remarks>This may cause a shift from  Brzozowski to Antimirov mode.</remarks>
-        public static void TakeTransition(ref CurrentState<T> state, int mintermId, T minterm)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void TakeTransition(ref CurrentState<T> state, int mintermId, T minterm, SymbolicRegexMatcher.PerThreadData perThreadData)
         {
             SymbolicRegexBuilder<T> builder = state._builder;
 
@@ -325,22 +359,21 @@ namespace System.Text.RegularExpressions.Symbolic
                     // Update the state representation accordingly.
                     // TBD: OrderedOr
                     Debug.Assert(dfaMatchingState.Node.Kind == SymbolicRegexNodeKind.Or);
-                    state = new CurrentState<T>(dfaMatchingState);
+                    state = new CurrentState<T>(dfaMatchingState, perThreadData);
                 }
             }
             else
             {
-                HashSet<int> nfaStates = state._nfaStates;
-                List<int> nfaStatesList = state._nfaStatesList;
-                List<int> sourceStates = state._scratchNfaStatesList;
-
-                // Take a snapshot of the current set of NFA states.
-                sourceStates.Clear();
-                sourceStates.AddRange(nfaStatesList);
+                // Grab the sets/lists, swapping the current active states list with the scratch list.
+                HashSet<int> destStates = state._nfaStates!;
+                List<int> destStatesList = state._nfaStatesListScratch!;
+                List<int> sourceStates = state._nfaStatesList!;
+                state._nfaStatesList = destStatesList;
+                state._nfaStatesListScratch = sourceStates;
 
                 // Transition into the new set of target NFA states.
-                nfaStates.Clear();
-                nfaStatesList.Clear();
+                destStates.Clear();
+                destStatesList.Clear();
                 for (int i = 0; i < sourceStates.Count; i++)
                 {
                     int source = sourceStates[i];
@@ -354,9 +387,9 @@ namespace System.Text.RegularExpressions.Symbolic
                     // Add each non-duplicate target to the states list.
                     for (int j = 0; j < targets.Count; j++)
                     {
-                        if (nfaStates.Add(targets[j]))
+                        if (destStates.Add(targets[j]))
                         {
-                            nfaStatesList.Add(targets[j]);
+                            destStatesList.Add(targets[j]);
                         }
                     }
                 }
