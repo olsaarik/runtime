@@ -435,13 +435,15 @@ namespace System.Text.RegularExpressions.Symbolic
                     SymbolicMatch.NoMatch;
             }
 
+            // Start state of the dot-star pattern, which in general depends on the previous character kind in the input.
+            CurrentState<TSetType> startState = new CurrentState<TSetType>(_dotstarredInitialStates[GetCharKind(input, startat - 1)]);
             // Phase 1:
             // Determine whether there is a match by finding the first final state position.  This only tells
             // us whether there is a match but needn't give us the longest possible match. This may return -1 as
             // a legitimate value when the initial state is nullable and startat == 0. It returns NoMatchExists (-2)
             // when there is no match.  As an example, consider the pattern a{5,10}b* run against an input
             // of aaaaaaaaaaaaaaabbbc: phase 1 will find the position of the first b: aaaaaaaaaaaaaaab.
-            int i = FindFinalStatePosition(input, startat, timeoutOccursAt, out int matchStartLowBoundary, out int matchStartLengthMarker);
+            int i = FindFinalStatePosition(ref startState, input, startat, timeoutOccursAt, out int matchStartLowBoundary, out int matchStartLengthMarker);
 
             // If there wasn't a match, we're done.
             if (i == NoMatchExists)
@@ -472,7 +474,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 Debug.Assert(i >= startat - 1);
                 matchStart = i < startat ?
                     startat :
-                    FindStartPosition(input, i, matchStartLowBoundary);
+                    FindStartPosition(ref startState, input, i, matchStartLowBoundary);
             }
 
             // Phase 3:
@@ -490,7 +492,7 @@ namespace System.Text.RegularExpressions.Symbolic
                     return new SymbolicMatch(matchStart, _fixedMatchLength.GetValueOrDefault());
                 }
 
-                int matchEnd = FindEndPosition(input, matchStart);
+                int matchEnd = FindEndPosition(ref startState, input, matchStart);
                 return new SymbolicMatch(matchStart, matchEnd + 1 - matchStart);
             }
             else
@@ -501,18 +503,19 @@ namespace System.Text.RegularExpressions.Symbolic
         }
 
         /// <summary>Find match end position using the original pattern, end position is known to exist.</summary>
+        /// <param name="state">reference to start state</param>
         /// <param name="input">input span</param>
         /// <param name="i">inclusive start position</param>
         /// <returns>the match end position</returns>
-        private int FindEndPosition(ReadOnlySpan<char> input, int i)
+        private int FindEndPosition(ref CurrentState<TSetType> state, ReadOnlySpan<char> input, int i)
         {
             int i_end = input.Length;
-            // reset to Brzozowski mode
+
+            // Reset to DFA mode
             _builder._antimirov = false;
 
             // Pick the correct start state based on previous character kind.
-            uint prevCharKind = GetCharKind(input, i - 1);
-            CurrentState<TSetType> state = new CurrentState<TSetType>(_initialStates[prevCharKind]);
+            state.SetDfaMatchingState(_initialStates[GetCharKind(input, i - 1)]);
 
             if (state.IsNullable(GetCharKind(input, i)))
             {
@@ -686,19 +689,19 @@ namespace System.Text.RegularExpressions.Symbolic
         }
 
         /// <summary>Walk back in reverse using the reverse pattern to find the start position of match, start position is known to exist.</summary>
+        /// <param name="q">reference to current state</param>
         /// <param name="input">the input span</param>
         /// <param name="i">position to start walking back from, i points at the last character of the match</param>
         /// <param name="match_start_boundary">do not pass this boundary when walking back</param>
         /// <returns></returns>
-        private int FindStartPosition(ReadOnlySpan<char> input, int i, int match_start_boundary)
+        private int FindStartPosition(ref CurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int match_start_boundary)
         {
-            // Fetch the correct start state for the reverse pattern.
-            // This depends on previous character --- which, because going backwards, is character number i+1.
-            uint prevKind = GetCharKind(input, i + 1);
-            // reset to Brzozowski mode
+            // Reset to DFA mode
             _builder._antimirov = false;
 
-            CurrentState<TSetType> q = new CurrentState<TSetType>(_reverseInitialStates[prevKind]);
+            // Fetch the correct start state for the reverse pattern.
+            // This depends on previous character --- which, because going backwards, is character number i+1.
+            q.SetDfaMatchingState(_reverseInitialStates[GetCharKind(input, i + 1)]);
 
             if (i == -1)
             {
@@ -759,17 +762,14 @@ namespace System.Text.RegularExpressions.Symbolic
         }
 
         /// <summary>Returns NoMatchExists if no match exists. Returns -1 when i=0 and the initial state is nullable.</summary>
+        /// <param name="q">reference to current state</param>
         /// <param name="input">given input span</param>
         /// <param name="i">start position</param>
         /// <param name="timeoutOccursAt">The time at which timeout occurs, if timeouts are being checked.</param>
         /// <param name="initialStateIndex">last position the initial state of <see cref="_dotStarredPattern"/> was visited</param>
         /// <param name="matchLength">length of match when positive</param>
-        private int FindFinalStatePosition(ReadOnlySpan<char> input, int i, int timeoutOccursAt, out int initialStateIndex, out int matchLength)
+        private int FindFinalStatePosition(ref CurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int timeoutOccursAt, out int initialStateIndex, out int matchLength)
         {
-            // Get the correct start state of the dot-star pattern, which in general depends on the previous character kind in the input.
-            uint prevCharKindId = GetCharKind(input, i - 1);
-
-            CurrentState<TSetType> q = new CurrentState<TSetType>(_dotstarredInitialStates[prevCharKindId]);
             initialStateIndex = i;
 
             if (q.IsNothing)
@@ -813,7 +813,7 @@ namespace System.Text.RegularExpressions.Symbolic
                         // the start state must be updated
                         // to reflect the kind of the previous character
                         // when anchors are not used, q will remain the same state
-                        q = new CurrentState<TSetType>(_dotstarredInitialStates[GetCharKind(input, i - 1)]);
+                        q.SetDfaMatchingState(_dotstarredInitialStates[GetCharKind(input, i - 1)]);
                         if (q.IsNothing)
                         {
                             return NoMatchExists;

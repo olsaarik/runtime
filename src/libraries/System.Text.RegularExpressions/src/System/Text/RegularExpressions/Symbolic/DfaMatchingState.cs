@@ -209,11 +209,11 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <summary>Scratch list used temporarily to maintain the previous list of states.</summary>
         private readonly List<int> _scratchNfaStatesList = new();
 
-        public CurrentState(DfaMatchingState<T> dfaMatchingState)
+        public CurrentState(DfaMatchingState<T> dfaMatchingState, bool nfaMode = false)
         {
             _builder = dfaMatchingState.Node._builder;
 
-            if (_builder._antimirov)
+            if (nfaMode)
             {
                 // Create NFA state set if the builder is in Antimirov mode
                 Debug.Assert(dfaMatchingState.Node.Kind == SymbolicRegexNodeKind.Or && dfaMatchingState.Node._alts is not null);
@@ -230,12 +230,12 @@ namespace System.Text.RegularExpressions.Symbolic
                     }
                 }
 
-                // Antimirov mode
+                // Antimirov (NFA) mode
                 _dfaMatchingState = null;
             }
             else
             {
-                // Brzozowski mode
+                // Brzozowski (DFA) mode
                 _dfaMatchingState = dfaMatchingState;
             }
         }
@@ -325,7 +325,7 @@ namespace System.Text.RegularExpressions.Symbolic
                     // Update the state representation accordingly.
                     // TBD: OrderedOr
                     Debug.Assert(dfaMatchingState.Node.Kind == SymbolicRegexNodeKind.Or);
-                    state = new CurrentState<T>(dfaMatchingState);
+                    state = new CurrentState<T>(dfaMatchingState, true);
                 }
             }
             else
@@ -361,6 +361,12 @@ namespace System.Text.RegularExpressions.Symbolic
                     }
                 }
             }
+        }
+
+        /// <summary>Goes (back) to Brzozowski mode, sets dfaMatchingState as the current DFA state.</summary>
+        public void SetDfaMatchingState(DfaMatchingState<T>? dfaMatchingState)
+        {
+            _dfaMatchingState = dfaMatchingState;
         }
     }
 }
