@@ -10,7 +10,7 @@ namespace System.Text.RegularExpressions.Symbolic
     internal sealed class SymbolicRegexRunnerFactory : RegexRunnerFactory
     {
         /// <summary>A SymbolicRegexMatcher of either ulong or BV depending on the number of minterms.</summary>
-        internal readonly ISymbolicRegexMatcher _matcher;
+        internal readonly SymbolicRegexMatcher _matcher;
 
         /// <summary>Initializes the factory.</summary>
         public SymbolicRegexRunnerFactory(RegexCode code, RegexOptions options, TimeSpan matchTimeout, CultureInfo culture)
@@ -69,7 +69,7 @@ namespace System.Text.RegularExpressions.Symbolic
 
         /// <summary>Runner type produced by this factory.</summary>
         /// <remarks>
-        /// The wrapped <see cref="ISymbolicRegexMatcher"/> is itself thread-safe and can be shared across
+        /// The wrapped <see cref="SymbolicRegexMatcher"/> is itself thread-safe and can be shared across
         /// all runner instances, but the runner itself has state (e.g. for captures, positions, etc.)
         /// and must not be shared between concurrent uses.
         /// </remarks>
@@ -78,7 +78,7 @@ namespace System.Text.RegularExpressions.Symbolic
             /// <summary>The matching engine.</summary>
             private readonly SymbolicRegexMatcher<TSetType> _matcher;
             /// <summary>Per thread data available to the matching engine.</summary>
-            private readonly SymbolicRegexMatcher<TSetType>.PerThreadData _perThreadData;
+            private readonly SymbolicRegexMatcher.PerThreadData _perThreadData;
 
             internal Runner(SymbolicRegexMatcher<TSetType> matcher)
             {

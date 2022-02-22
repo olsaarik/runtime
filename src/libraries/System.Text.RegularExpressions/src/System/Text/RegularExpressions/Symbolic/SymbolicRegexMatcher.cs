@@ -11,7 +11,7 @@ using System.Threading;
 namespace System.Text.RegularExpressions.Symbolic
 {
     /// <summary>Represents a regex matching engine that performs regex matching using symbolic derivatives.</summary>
-    internal interface ISymbolicRegexMatcher
+    internal abstract class SymbolicRegexMatcher
     {
 #if DEBUG
         /// <summary>Unwind the regex of the matcher and save the resulting state graph in DGML</summary>
@@ -23,7 +23,7 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="writer">dgml output is written here</param>
         /// <param name="maxLabelLength">maximum length of labels in nodes anything over that length is indicated with .. </param>
         /// <param name="asNFA">if true creates NFA instead of DFA</param>
-        void SaveDGML(TextWriter writer, int bound, bool hideStateInfo, bool addDotStar, bool inReverse, bool onlyDFAinfo, int maxLabelLength, bool asNFA);
+        public abstract void SaveDGML(TextWriter writer, int bound, bool hideStateInfo, bool addDotStar, bool inReverse, bool onlyDFAinfo, int maxLabelLength, bool asNFA);
 
         /// <summary>
         /// Generates up to k random strings matched by the regex
@@ -32,13 +32,116 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="randomseed">random seed for the generator, 0 means no random seed</param>
         /// <param name="negative">if true then generate inputs that do not match</param>
         /// <returns></returns>
-        IEnumerable<string> GenerateRandomMembers(int k, int randomseed, bool negative);
+        public abstract IEnumerable<string> GenerateRandomMembers(int k, int randomseed, bool negative);
 #endif
+
+        /// <summary>
+        /// Per thread data to be held by the regex runner and passed into every call to FindMatch. This is used to
+        /// avoid repeated memory allocation.
+        /// </summary>
+        internal sealed class PerThreadData
+        {
+            /// <summary>Maps used for the capturing third phase.</summary>
+            public readonly SparseIntMap<Registers>? Current, Next;
+            /// <summary>Registers used for the capturing third phase.</summary>
+            public readonly Registers InitialRegisters;
+
+            /// <summary>List used to store ordered NFA states.</summary>
+            public List<int>? NfaStateList;
+            /// <summary>Set used to store NFA states for fast O(1) lookup.</summary>
+            public HashSet<int>? NfaStateSet;
+            /// <summary>Scratch list used to as a swap list when enumerating the current states to build up the new list.</summary>
+            public List<int>? NfaStateListScratch;
+
+            public PerThreadData(int capsize)
+            {
+                // Only create data used for capturing mode if there are subcaptures
+                if (capsize > 1)
+                {
+                    Current = new();
+                    Next = new();
+                    InitialRegisters = new Registers(new int[capsize], new int[capsize]);
+                }
+            }
+        }
+
+        /// <summary>Stores additional data for tracking capture start and end positions.</summary>
+        /// <remarks>The NFA simulation based third phase has one of these for each current state in the current set of live states.</remarks>
+        internal struct Registers
+        {
+            public Registers(int[] captureStarts, int[] captureEnds)
+            {
+                CaptureStarts = captureStarts;
+                CaptureEnds = captureEnds;
+            }
+
+            public int[] CaptureStarts { get; set; }
+            public int[] CaptureEnds { get; set; }
+
+            /// <summary>
+            /// Applies a list of effects in order to these registers at the provided input position. The order of effects
+            /// should not matter though, as multiple effects to the same capture start or end do not arise.
+            /// </summary>
+            /// <param name="effects">list of effects to be applied</param>
+            /// <param name="pos">the current input position to record</param>
+            public void ApplyEffects(List<DerivativeEffect> effects, int pos)
+            {
+                foreach (DerivativeEffect effect in effects)
+                {
+                    ApplyEffect(effect, pos);
+                }
+            }
+
+            /// <summary>
+            /// Apply a single effect to these registers at the provided input position.
+            /// </summary>
+            /// <param name="effect">the effecto to be applied</param>
+            /// <param name="pos">the current input position to record</param>
+            public void ApplyEffect(DerivativeEffect effect, int pos)
+            {
+                switch (effect.Kind)
+                {
+                    case DerivativeEffectKind.CaptureStart:
+                        CaptureStarts[effect.CaptureNumber] = pos;
+                        break;
+                    case DerivativeEffectKind.CaptureEnd:
+                        CaptureEnds[effect.CaptureNumber] = pos;
+                        break;
+                }
+            }
+
+            /// <summary>
+            /// Make a copy of this set of registers.
+            /// </summary>
+            /// <returns>Registers pointing to copies of this set of registers</returns>
+            public Registers Clone() => new Registers((int[])CaptureStarts.Clone(), (int[])CaptureEnds.Clone());
+
+            /// <summary>
+            /// Copy register values from another set of registers, possibly allocating new arrays if they were not yet allocated.
+            /// </summary>
+            /// <param name="other">the registers to copy from</param>
+            public void Assign(Registers other)
+            {
+                if (CaptureStarts is not null && CaptureEnds is not null)
+                {
+                    Debug.Assert(CaptureStarts.Length == other.CaptureStarts.Length);
+                    Debug.Assert(CaptureEnds.Length == other.CaptureEnds.Length);
+
+                    Array.Copy(other.CaptureStarts, CaptureStarts, CaptureStarts.Length);
+                    Array.Copy(other.CaptureEnds, CaptureEnds, CaptureEnds.Length);
+                }
+                else
+                {
+                    CaptureStarts = (int[])other.CaptureStarts.Clone();
+                    CaptureEnds = (int[])other.CaptureEnds.Clone();
+                }
+            }
+        }
     }
 
     /// <summary>Represents a regex matching engine that performs regex matching using symbolic derivatives.</summary>
     /// <typeparam name="TSetType">Character set type.</typeparam>
-    internal sealed class SymbolicRegexMatcher<TSetType> : ISymbolicRegexMatcher where TSetType : notnull
+    internal sealed class SymbolicRegexMatcher<TSetType> : SymbolicRegexMatcher where TSetType : notnull
     {
         /// <summary>Maximum number of states before switching over to Antimirov mode.</summary>
         /// <remarks>
@@ -252,29 +355,6 @@ namespace System.Text.RegularExpressions.Symbolic
         }
 
         /// <summary>
-        /// Per thread data to be held by the regex runner and passed into every call to FindMatch. This is used to
-        /// avoid repeated memory allocation.
-        /// </summary>
-        internal sealed class PerThreadData
-        {
-            /// <summary>Maps used for the capturing third phase.</summary>
-            public readonly SparseIntMap<Registers>? Current, Next;
-            /// <summary>Registers used for the capturing third phase.</summary>
-            public readonly Registers InitialRegisters;
-
-            public PerThreadData(int capsize)
-            {
-                // Only create data used for capturing mode if there are subcaptures
-                if (capsize > 1)
-                {
-                    Current = new();
-                    Next = new();
-                    InitialRegisters = new Registers(new int[capsize], new int[capsize]);
-                }
-            }
-        }
-
-        /// <summary>
         /// Create a PerThreadData with the appropriate parts initialized for this matcher's pattern.
         /// </summary>
         internal PerThreadData CreatePerThreadData() => new PerThreadData(_capsize);
@@ -283,8 +363,9 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="input">input span</param>
         /// <param name="i">The index into <paramref name="input"/> at which the target character lives.</param>
         /// <param name="state">passed in as the source state and upon return is set to the new target state</param>
+        /// <param name="perThreadData">Per thread data reused between calls.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void Delta(ReadOnlySpan<char> input, int i, ref CurrentState<TSetType> state)
+        private void Delta(ReadOnlySpan<char> input, int i, ref CurrentState<TSetType> state, PerThreadData perThreadData)
         {
             TSetType[]? minterms = _builder._minterms;
             Debug.Assert(minterms is not null);
@@ -299,84 +380,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 minterms[mintermId] :
                 _builder._solver.False; // minterm=False represents \Z
 
-            CurrentState<TSetType>.TakeTransition(ref state, mintermId, minterm);
-        }
-
-        /// <summary>
-        /// Stores additional data for tracking capture start and end positions.
-        /// </summary>
-        /// <remarks>
-        /// The NFA simulation based third phase has one of these for each current state in the current set of live states.
-        /// </remarks>
-        internal struct Registers
-        {
-            public Registers(int[] captureStarts, int[] captureEnds)
-            {
-                CaptureStarts = captureStarts;
-                CaptureEnds = captureEnds;
-            }
-
-            public int[] CaptureStarts { get; set; }
-            public int[] CaptureEnds { get; set; }
-
-            /// <summary>
-            /// Applies a list of effects in order to these registers at the provided input position. The order of effects
-            /// should not matter though, as multiple effects to the same capture start or end do not arise.
-            /// </summary>
-            /// <param name="effects">list of effects to be applied</param>
-            /// <param name="pos">the current input position to record</param>
-            public void ApplyEffects(List<DerivativeEffect> effects, int pos)
-            {
-                foreach (DerivativeEffect effect in effects)
-                {
-                    ApplyEffect(effect, pos);
-                }
-            }
-
-            /// <summary>
-            /// Apply a single effect to these registers at the provided input position.
-            /// </summary>
-            /// <param name="effect">the effecto to be applied</param>
-            /// <param name="pos">the current input position to record</param>
-            public void ApplyEffect(DerivativeEffect effect, int pos)
-            {
-                switch (effect.Kind)
-                {
-                    case DerivativeEffectKind.CaptureStart:
-                        CaptureStarts[effect.CaptureNumber] = pos;
-                        break;
-                    case DerivativeEffectKind.CaptureEnd:
-                        CaptureEnds[effect.CaptureNumber] = pos;
-                        break;
-                }
-            }
-
-            /// <summary>
-            /// Make a copy of this set of registers.
-            /// </summary>
-            /// <returns>Registers pointing to copies of this set of registers</returns>
-            public Registers Clone() => new Registers((int[])CaptureStarts.Clone(), (int[])CaptureEnds.Clone());
-
-            /// <summary>
-            /// Copy register values from another set of registers, possibly allocating new arrays if they were not yet allocated.
-            /// </summary>
-            /// <param name="other">the registers to copy from</param>
-            public void Assign(Registers other)
-            {
-                if (CaptureStarts is not null && CaptureEnds is not null)
-                {
-                    Debug.Assert(CaptureStarts.Length == other.CaptureStarts.Length);
-                    Debug.Assert(CaptureEnds.Length == other.CaptureEnds.Length);
-
-                    Array.Copy(other.CaptureStarts, CaptureStarts, CaptureStarts.Length);
-                    Array.Copy(other.CaptureEnds, CaptureEnds, CaptureEnds.Length);
-                }
-                else
-                {
-                    CaptureStarts = (int[])other.CaptureStarts.Clone();
-                    CaptureEnds = (int[])other.CaptureEnds.Clone();
-                }
-            }
+            CurrentState<TSetType>.TakeTransition(ref state, mintermId, minterm, perThreadData);
         }
 
         private List<(DfaMatchingState<TSetType>, List<DerivativeEffect>)> CreateNewCapturingTransitions(DfaMatchingState<TSetType> state, TSetType minterm, int offset)
@@ -436,14 +440,14 @@ namespace System.Text.RegularExpressions.Symbolic
             }
 
             // Start state of the dot-star pattern, which in general depends on the previous character kind in the input.
-            CurrentState<TSetType> startState = new CurrentState<TSetType>(_dotstarredInitialStates[GetCharKind(input, startat - 1)]);
+            CurrentState<TSetType> startState = new CurrentState<TSetType>(_dotstarredInitialStates[GetCharKind(input, startat - 1)], perThreadData);
             // Phase 1:
             // Determine whether there is a match by finding the first final state position.  This only tells
             // us whether there is a match but needn't give us the longest possible match. This may return -1 as
             // a legitimate value when the initial state is nullable and startat == 0. It returns NoMatchExists (-2)
             // when there is no match.  As an example, consider the pattern a{5,10}b* run against an input
             // of aaaaaaaaaaaaaaabbbc: phase 1 will find the position of the first b: aaaaaaaaaaaaaaab.
-            int i = FindFinalStatePosition(ref startState, input, startat, timeoutOccursAt, out int matchStartLowBoundary, out int matchStartLengthMarker);
+            int i = FindFinalStatePosition(ref startState, input, startat, timeoutOccursAt, out int matchStartLowBoundary, out int matchStartLengthMarker, perThreadData);
 
             // If there wasn't a match, we're done.
             if (i == NoMatchExists)
@@ -474,7 +478,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 Debug.Assert(i >= startat - 1);
                 matchStart = i < startat ?
                     startat :
-                    FindStartPosition(ref startState, input, i, matchStartLowBoundary);
+                    FindStartPosition(ref startState, input, i, matchStartLowBoundary, perThreadData);
             }
 
             // Phase 3:
@@ -492,7 +496,8 @@ namespace System.Text.RegularExpressions.Symbolic
                     return new SymbolicMatch(matchStart, _fixedMatchLength.GetValueOrDefault());
                 }
 
-                int matchEnd = FindEndPosition(ref startState, input, matchStart);
+                int matchEnd = FindEndPosition(ref startState, input, matchStart, perThreadData);
+
                 return new SymbolicMatch(matchStart, matchEnd + 1 - matchStart);
             }
             else
@@ -506,8 +511,9 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="state">reference to start state</param>
         /// <param name="input">input span</param>
         /// <param name="i">inclusive start position</param>
+        /// <param name="perThreadData">Per thread data reused between calls.</param>
         /// <returns>the match end position</returns>
-        private int FindEndPosition(ref CurrentState<TSetType> state, ReadOnlySpan<char> input, int i)
+        private int FindEndPosition(ref CurrentState<TSetType> state, ReadOnlySpan<char> input, int i, PerThreadData perThreadData)
         {
             int i_end = input.Length;
 
@@ -526,7 +532,7 @@ namespace System.Text.RegularExpressions.Symbolic
             while (i < input.Length)
             {
                 int j = Math.Min(input.Length, i + AntimirovThresholdLeeway);
-                bool done = FindEndPositionDeltas(input, ref i, j, ref state, ref i_end);
+                bool done = FindEndPositionDeltas(input, ref i, j, ref state, ref i_end, perThreadData);
 
                 if (done)
                 {
@@ -540,11 +546,11 @@ namespace System.Text.RegularExpressions.Symbolic
 
         /// <summary>Inner loop for FindEndPosition parameterized by an ITransition type.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool FindEndPositionDeltas(ReadOnlySpan<char> input, ref int i, int j, ref CurrentState<TSetType> q, ref int i_end)
+        private bool FindEndPositionDeltas(ReadOnlySpan<char> input, ref int i, int j, ref CurrentState<TSetType> q, ref int i_end, PerThreadData perThreadData)
         {
             do
             {
-                Delta(input, i, ref q);
+                Delta(input, i, ref q, perThreadData);
 
                 if (q.IsNullable(GetCharKind(input, i + 1)))
                 {
@@ -574,7 +580,7 @@ namespace System.Text.RegularExpressions.Symbolic
         private int FindEndPositionCapturing(ReadOnlySpan<char> input, int i, out Registers resultRegisters, PerThreadData perThreadData)
         {
             int i_end = input.Length;
-            Registers endRegisters = default(Registers);
+            Registers endRegisters = default;
             DfaMatchingState<TSetType>? endState = null;
 
             // Reset to Brzozowski mode
@@ -616,7 +622,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 int c = input[i];
                 int normalMintermId = _partitions.GetMintermID(c);
 
-                foreach ((int sourceId, SymbolicRegexMatcher<TSetType>.Registers sourceRegisters) in current.Values)
+                foreach ((int sourceId, Registers sourceRegisters) in current.Values)
                 {
                     Debug.Assert(_builder._capturingStateArray is not null);
                     DfaMatchingState<TSetType> sourceState = _builder._capturingStateArray[sourceId];
@@ -672,7 +678,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 }
 
                 // Swap the state sets and prepare for the next character
-                SparseIntMap<SymbolicRegexMatcher<TSetType>.Registers> tmp = current;
+                SparseIntMap<Registers> tmp = current;
                 current = next;
                 next = tmp;
                 next.Clear();
@@ -693,8 +699,9 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="input">the input span</param>
         /// <param name="i">position to start walking back from, i points at the last character of the match</param>
         /// <param name="match_start_boundary">do not pass this boundary when walking back</param>
+        /// <param name="perThreadData">Per thread data reused between calls.</param>
         /// <returns></returns>
-        private int FindStartPosition(ref CurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int match_start_boundary)
+        private int FindStartPosition(ref CurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int match_start_boundary, PerThreadData perThreadData)
         {
             // Reset to DFA mode
             _builder._antimirov = false;
@@ -721,7 +728,7 @@ namespace System.Text.RegularExpressions.Symbolic
             while (i >= match_start_boundary)
             {
                 int j = Math.Max(match_start_boundary, i - AntimirovThresholdLeeway);
-                bool done = FindStartPositionDeltas(input, ref i, j, ref q, ref last_start);
+                bool done = FindStartPositionDeltas(input, ref i, j, ref q, ref last_start, perThreadData);
 
                 if (done)
                 {
@@ -735,11 +742,11 @@ namespace System.Text.RegularExpressions.Symbolic
 
         // Inner loop for FindStartPosition parameterized by an ITransition type.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool FindStartPositionDeltas(ReadOnlySpan<char> input, ref int i, int j, ref CurrentState<TSetType> q, ref int last_start)
+        private bool FindStartPositionDeltas(ReadOnlySpan<char> input, ref int i, int j, ref CurrentState<TSetType> q, ref int last_start, PerThreadData perThreadData)
         {
             do
             {
-                Delta(input, i, ref q);
+                Delta(input, i, ref q, perThreadData);
 
                 // Reached a deadend state, thus the earliest match start point must have occurred already.
                 if (q.IsNothing)
@@ -768,7 +775,8 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="timeoutOccursAt">The time at which timeout occurs, if timeouts are being checked.</param>
         /// <param name="initialStateIndex">last position the initial state of <see cref="_dotStarredPattern"/> was visited</param>
         /// <param name="matchLength">length of match when positive</param>
-        private int FindFinalStatePosition(ref CurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int timeoutOccursAt, out int initialStateIndex, out int matchLength)
+        /// <param name="perThreadData">Per thread data reused between calls.</param>
+        private int FindFinalStatePosition(ref CurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int timeoutOccursAt, out int initialStateIndex, out int matchLength, PerThreadData perThreadData)
         {
             initialStateIndex = i;
 
@@ -823,7 +831,7 @@ namespace System.Text.RegularExpressions.Symbolic
 
                 int result;
                 int j = Math.Min(input.Length, i + AntimirovThresholdLeeway);
-                bool done = FindFinalStatePositionDeltas(input, j, ref i, ref q, ref matchLength, out result);
+                bool done = FindFinalStatePositionDeltas(input, j, ref i, ref q, ref matchLength, out result, perThreadData);
 
                 if (done)
                 {
@@ -842,12 +850,12 @@ namespace System.Text.RegularExpressions.Symbolic
 
         /// <summary>Inner loop for FindFinalStatePosition parameterized by an ITransition type.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool FindFinalStatePositionDeltas(ReadOnlySpan<char> input, int j, ref int i, ref CurrentState<TSetType> q, ref int matchLength, out int result)
+        private bool FindFinalStatePositionDeltas(ReadOnlySpan<char> input, int j, ref int i, ref CurrentState<TSetType> q, ref int matchLength, out int result, PerThreadData perThreadData)
         {
             do
             {
                 // Make the transition based on input[i].
-                Delta(input, i, ref q);
+                Delta(input, i, ref q, perThreadData);
 
                 if (q.IsNullable(GetCharKind(input, i + 1)))
                 {
@@ -906,14 +914,14 @@ namespace System.Text.RegularExpressions.Symbolic
         }
 
 #if DEBUG
-        public void SaveDGML(TextWriter writer, int bound, bool hideStateInfo, bool addDotStar, bool inReverse, bool onlyDFAinfo, int maxLabelLength, bool asNFA)
+        public override void SaveDGML(TextWriter writer, int bound, bool hideStateInfo, bool addDotStar, bool inReverse, bool onlyDFAinfo, int maxLabelLength, bool asNFA)
         {
             var graph = new DGML.RegexAutomaton<TSetType>(this, bound, addDotStar, inReverse, asNFA);
             var dgml = new DGML.DgmlWriter(writer, hideStateInfo, maxLabelLength, onlyDFAinfo);
             dgml.Write(graph);
         }
 
-        public IEnumerable<string> GenerateRandomMembers(int k, int randomseed, bool negative) =>
+        public override IEnumerable<string> GenerateRandomMembers(int k, int randomseed, bool negative) =>
             new SymbolicRegexSampler<TSetType>(_pattern, randomseed, negative).GenerateRandomMembers(k);
 #endif
     }
