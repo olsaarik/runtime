@@ -190,49 +190,72 @@ namespace System.Text.RegularExpressions.Symbolic
         // TBD: Consider SparseIntMap instead of HashSet
         // TBD: OrderedOr
 
-        // _dfaMatchingState == null means Antimirov mode
-        private DfaMatchingState<T>? _dfaMatchingState;
-
+        /// <summary>The associated builder used to lazily add new DFA or NFA nodes to the graph.</summary>
         private readonly SymbolicRegexBuilder<T> _builder;
 
-        // used in Antimirov mode only
+        /// <summary>The DFA matching state instance.</summary>
+        /// <remarks>null when in Antimirov (NFA) mode.</remarks>
+        private DfaMatchingState<T>? _dfaMatchingState;
+
+        /// <summary>The set of NFA states.</summary>
         private readonly HashSet<int> _nfaStates = new();
+        /// <summary>The list of NFA states, in order.</summary>
+        /// <remarks>
+        /// The contents of this list is the same as <see cref="_nfaStates"/>, but it's used for maintaining
+        /// the order of the states whereas <see cref="_nfaStates"/> is used for O(1) lookup.
+        /// </remarks>
         private readonly List<int> _nfaStatesList = new();
+
+        /// <summary>Scratch list used temporarily to maintain the previous list of states.</summary>
+        private readonly List<int> _scratchNfaStatesList = new();
 
         public CurrentState(DfaMatchingState<T> dfaMatchingState)
         {
             _builder = dfaMatchingState.Node._builder;
+
             if (_builder._antimirov)
             {
                 // Create NFA state set if the builder is in Antimirov mode
-                Debug.Assert(dfaMatchingState.Node.Kind == SymbolicRegexKind.Or && dfaMatchingState.Node._alts is not null);
+                Debug.Assert(dfaMatchingState.Node.Kind == SymbolicRegexNodeKind.Or && dfaMatchingState.Node._alts is not null);
                 foreach (SymbolicRegexNode<T> member in dfaMatchingState.Node._alts)
                 {
-                    // Create (possibly new) NFA states for all the members
-                    // add their IDs to the current set of NFA states and into the list
-                    int nfaState = _builder.MkNfaState(member, dfaMatchingState.PrevCharKind);
+                    // Create (possibly new) NFA states for all the members.
+                    // Add their IDs to the current set of NFA states and into the list.
+                    int nfaState = _builder.CreateNfaState(member, dfaMatchingState.PrevCharKind);
                     if (_nfaStates.Add(nfaState))
-                        // the list maintains the original order in which states are added but avoids duplicates
-                        // TBD: OrderedOr may need to rely on that order
+                    {
+                        // The list maintains the original order in which states are added (without duplicates).
+                        // TBD: OrderedOr may need to rely on that order.
                         _nfaStatesList.Add(nfaState);
+                    }
                 }
+
                 // Antimirov mode
                 _dfaMatchingState = null;
             }
             else
+            {
                 // Brzozowski mode
                 _dfaMatchingState = dfaMatchingState;
+            }
         }
+
         public bool StartsWithLineAnchor
         {
             get
             {
                 if (_dfaMatchingState is null)
                 {
-                    // in Antimirov mode check if some underlying core state starts with line anchor
-                    for (int i = 0; i < _nfaStatesList.Count; i++)
-                        if (_builder.GetCoreState(_nfaStatesList[i]).StartsWithLineAnchor)
+                    // In Antimirov mode, check if any underlying core state starts with a line anchor.
+                    List<int> states = _nfaStatesList;
+                    for (int i = 0; i < states.Count; i++)
+                    {
+                        if (_builder.GetCoreState(states[i]).StartsWithLineAnchor)
+                        {
                             return true;
+                        }
+                    }
+
                     return false;
                 }
                 else
@@ -242,14 +265,21 @@ namespace System.Text.RegularExpressions.Symbolic
                 }
             }
         }
+
         public bool IsNullable(uint nextCharKind)
         {
             if (_dfaMatchingState is null)
             {
-                // in Antimirov mode check if some underlying core state is nullable
-                for (int i = 0; i < _nfaStatesList.Count; i++)
-                    if (_builder.GetCoreState(_nfaStatesList[i]).IsNullable(nextCharKind))
+                // In Antimirov mode, check if any underlying core state is nullable.
+                List<int> states = _nfaStatesList;
+                for (int i = 0; i < states.Count; i++)
+                {
+                    if (_builder.GetCoreState(states[i]).IsNullable(nextCharKind))
+                    {
                         return true;
+                    }
+                }
+
                 return false;
             }
             else
@@ -258,53 +288,77 @@ namespace System.Text.RegularExpressions.Symbolic
             }
         }
 
-        /// <summary>In Antimirov mode an empty set of states means that it is a deadend</summary>
-        public bool IsDeadend => (_dfaMatchingState is null ? _nfaStates.Count == 0 : _dfaMatchingState.IsDeadend);
-        /// <summary>In Antimirov mode an empty set of states means that it is nothing</summary>
-        public bool IsNothing => (_dfaMatchingState is null ? _nfaStates.Count == 0 : _dfaMatchingState.IsNothing);
-        /// <summary>In Antimirov mode there are no watchdogs</summary>
-        public int WatchDog => (_dfaMatchingState is null ? -1 : _dfaMatchingState.WatchDog);
-        /// <summary>In Antimirov mode a set of states does not qualify as an initial state</summary>
-        public bool IsInitialState => (_dfaMatchingState is null ? false : _dfaMatchingState.IsInitialState);
+        /// <summary>Gets whether this is a dead-end state, meaning there are no transitions possible out of the state.</summary>
+        /// <remarks>In Antimirov mode, an empty set of states means that it is a deadend.</remarks>
+        public bool IsDeadend => _dfaMatchingState?.IsDeadend ?? _nfaStates.Count == 0;
 
-        /// <summary>
-        /// Take the transition to the next state. This may cause a shift from  Brzozowski to Antimirov mode.
-        /// </summary>
+        /// <summary>Gets whether this is a nothing state, meaning it doesn't match.</summary>
+        /// <remarks>In Antimirov mode, an empty set of states means that it is nothing.</remarks>
+        public bool IsNothing => _dfaMatchingState?.IsNothing ?? _nfaStates.Count == 0;
+
+        /// <summary>Gets the length of any fixed-length marker that exists for this state, or -1 if there is none.</summary>
+        /// <summary>In Antimirov mode, there are no fixed-length markers.</summary>
+        public int FixedLength => _dfaMatchingState?.FixedLength ?? -1;
+
+        /// <summary>Gets whether this is an initial state.</summary>
+        /// <summary>In Antimirov mode, no set of states qualifies as an initial state.</summary>
+        public bool IsInitialState => _dfaMatchingState?.IsInitialState ?? false;
+
+        /// <summary>Take the transition to the next state.</summary>
+        /// <remarks>This may cause a shift from  Brzozowski to Antimirov mode.</remarks>
         public static void TakeTransition(ref CurrentState<T> state, int mintermId, T minterm)
         {
-            if (state._dfaMatchingState is null)
-            {
-                // take a snapshot of the current set of nfa states
-                int[] sourceStates = state._nfaStatesList.ToArray();
+            SymbolicRegexBuilder<T> builder = state._builder;
 
-                // transition into the new set of target nfa states
-                state._nfaStates.Clear();
-                state._nfaStatesList.Clear();
-                for (int i = 0; i < sourceStates.Length; i++)
+            if (state._dfaMatchingState is DfaMatchingState<T> dfaMatchingState)
+            {
+                Debug.Assert(builder._delta is not null);
+
+                int dfaOffset = (dfaMatchingState.Id << builder._mintermsCount) | mintermId;
+                state._dfaMatchingState = dfaMatchingState =
+                    Volatile.Read(ref builder._delta[dfaOffset]) ??
+                    builder.CreateNewTransition(dfaMatchingState, minterm, dfaOffset);
+
+                if (builder._antimirov)
                 {
-                    int source = sourceStates[i];
-                    // Calculate the offset into the nfa transition table
-                    int nfaoffset = (source << state._builder._mintermsCount) | mintermId;
-                    List<int> targets = Volatile.Read(ref state._builder._antimirovDelta[nfaoffset]) ?? state._builder.CreateNewNfaTransition(source, mintermId, minterm, nfaoffset);
-                    for (int j = 0; j < targets.Count; j++)
-                        if (state._nfaStates.Add(targets[j]))
-                            state._nfaStatesList.Add(targets[j]);
+                    // CreateNewTransition switched from Brzozowski to Antimirov mode.
+                    // Update the state representation accordingly.
+                    // TBD: OrderedOr
+                    Debug.Assert(dfaMatchingState.Node.Kind == SymbolicRegexNodeKind.Or);
+                    state = new CurrentState<T>(dfaMatchingState);
                 }
             }
             else
             {
-                Debug.Assert(state._builder._delta is not null);
+                HashSet<int> nfaStates = state._nfaStates;
+                List<int> nfaStatesList = state._nfaStatesList;
+                List<int> sourceStates = state._scratchNfaStatesList;
 
-                int offset = (state._dfaMatchingState.Id << state._builder._mintermsCount) | mintermId;
-                state._dfaMatchingState = Volatile.Read(ref state._builder._delta[offset]) ?? state._builder.CreateNewTransition(state._dfaMatchingState, minterm, offset);
+                // Take a snapshot of the current set of NFA states.
+                sourceStates.Clear();
+                sourceStates.AddRange(nfaStatesList);
 
-                if (state._builder._antimirov)
+                // Transition into the new set of target NFA states.
+                nfaStates.Clear();
+                nfaStatesList.Clear();
+                for (int i = 0; i < sourceStates.Count; i++)
                 {
-                    // CreateNewTransition switched from Brzozowski to Antimirov mode
-                    // update the state representation accordingly
-                    // TBD: OrderedOr
-                    Debug.Assert(state._dfaMatchingState.Node.Kind == SymbolicRegexKind.Or);
-                    state = new CurrentState<T>(state._dfaMatchingState);
+                    int source = sourceStates[i];
+
+                    // Calculate the offset into the NFA transition table.
+                    int nfaOffset = (source << builder._mintermsCount) | mintermId;
+                    List<int> targets =
+                        Volatile.Read(ref builder._antimirovDelta[nfaOffset]) ??
+                        builder.CreateNewNfaTransition(source, mintermId, minterm, nfaOffset);
+
+                    // Add each non-duplicate target to the states list.
+                    for (int j = 0; j < targets.Count; j++)
+                    {
+                        if (nfaStates.Add(targets[j]))
+                        {
+                            nfaStatesList.Add(targets[j]);
+                        }
+                    }
                 }
             }
         }

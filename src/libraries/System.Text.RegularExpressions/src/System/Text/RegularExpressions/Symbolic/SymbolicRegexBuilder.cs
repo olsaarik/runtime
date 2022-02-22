@@ -107,22 +107,22 @@ namespace System.Text.RegularExpressions.Symbolic
         internal bool _antimirov;
 
         /// <summary>
-        /// Maps each NFA state id to the state id of the DfaMatchingState stored in _statearray.
+        /// Maps each NFA state id to the state id of the DfaMatchingState stored in _stateArray.
         /// This map is used to compactly represent NFA state ids in Antimirov mode in order to utilize
         /// the property that all NFA states are small integers in one interval.
         /// The valid entries are 0 to <see cref="NfaStateCount"/>-1.
         /// </summary>
-        internal int[] _antimirovStatearray = Array.Empty<int>();
+        internal int[] _antimirovStateArray = Array.Empty<int>();
 
         /// <summary>
         /// Maps the id of a DfaMatchingState to the NFA state id that it is being identifed with in the NFA.
         /// It is the inverse of used entries in _antimirovStatearray.
         /// The range of this map is 0 to <see cref="NfaStateCount"/>-1.
         /// </summary>
-        internal Dictionary<int, int> _antimirovStatearrayInverse = new();
+        internal readonly Dictionary<int, int> _antimirovStateArrayInverse = new();
 
-        /// <summary>Gets <see cref="_antimirovStatearrayInverse"/>.Count</summary>
-        internal int NfaStateCount => _antimirovStatearrayInverse.Count;
+        /// <summary>Gets <see cref="_antimirovStateArrayInverse"/>.Count</summary>
+        internal int NfaStateCount => _antimirovStateArrayInverse.Count;
 
         /// <summary>
         /// Transition function for NFA transitions in Antimirov mode.
@@ -334,29 +334,6 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <summary>Creates a fixed length marker for the end of a sequence.</summary>
         internal SymbolicRegexNode<TElement> CreateFixedLengthMarker(int length) => SymbolicRegexNode<TElement>.CreateFixedLengthMarker(this, length);
 
-        /// <summary>Creates a concatenation of singletons with an optional fixed length marker at the end.</summary>
-        internal SymbolicRegexNode<TElement> CreateSequence(TElement[] sequence, bool tryCreateFixedLengthMarker)
-        {
-            int k = sequence.Length;
-            if (k == 0)
-            {
-                return Epsilon;
-            }
-            
-            if (k == 1)
-            {
-                return tryCreateFixedLengthMarker ?
-                    SymbolicRegexNode<TElement>.CreateConcat(this, CreateSingleton(sequence[0]), CreateFixedLengthMarker(1)) :
-                    CreateSingleton(sequence[0]);
-            }
-            var nodes = new SymbolicRegexNode<TElement>[sequence.Length];
-            for (int i = 0; i < nodes.Length; i++)
-            {
-                nodes[i] = CreateSingleton(sequence[i]);
-            }
-            return CreateConcat(nodes, tryCreateFixedLengthMarker);
-        }
-
         /// <summary>
         /// Make a complemented node
         /// </summary>
@@ -532,26 +509,31 @@ namespace System.Text.RegularExpressions.Symbolic
         {
             if (_antimirov)
             {
-                _antimirovStatearray = Array.Empty<int>();
+                _antimirovStateArray = Array.Empty<int>();
                 _antimirovDelta = Array.Empty<List<int>>();
-                _antimirovStatearrayInverse.Clear();
+                _antimirovStateArrayInverse.Clear();
             }
             else
+            {
                 _antimirov = true;
+            }
         }
 
         /// <summary>
         /// Make an NFA state for the given node and previous character kind.
         /// </summary>
-        public int MkNfaState(SymbolicRegexNode<TElement> node, uint prevCharKind)
+        public int CreateNfaState(SymbolicRegexNode<TElement> node, uint prevCharKind)
         {
             // TBD: OrderedOr
-            Debug.Assert(node.Kind != SymbolicRegexKind.Or);
-            // First make the underlying core state
-            DfaMatchingState<TElement> coreState = MkState(node, prevCharKind);
+            Debug.Assert(node.Kind != SymbolicRegexNodeKind.Or);
 
-            if (!_antimirovStatearrayInverse.TryGetValue(coreState.Id, out int nfaStateId))
+            // First make the underlying core state
+            DfaMatchingState<TElement> coreState = CreateState(node, prevCharKind);
+
+            if (!_antimirovStateArrayInverse.TryGetValue(coreState.Id, out int nfaStateId))
+            {
                 nfaStateId = MakeNewNfaState(coreState.Id);
+            }
 
             return nfaStateId;
         }
@@ -561,17 +543,18 @@ namespace System.Text.RegularExpressions.Symbolic
         {
             lock (this)
             {
-                if (NfaStateCount == _antimirovStatearray.Length)
+                if (NfaStateCount == _antimirovStateArray.Length)
                 {
                     // TBD: is 1024 reasonable?
-                    int newsize = _antimirovStatearray.Length + 1024;
-                    Array.Resize(ref _antimirovStatearray, newsize);
+                    int newsize = _antimirovStateArray.Length + 1024;
+                    Array.Resize(ref _antimirovStateArray, newsize);
                     Array.Resize(ref _antimirovDelta, newsize << _mintermsCount);
                     // TBD: capturing
                 }
+
                 int nfaStateId = NfaStateCount;
-                _antimirovStatearray[nfaStateId] = coreStateId;
-                _antimirovStatearrayInverse[coreStateId] = nfaStateId;
+                _antimirovStateArray[nfaStateId] = coreStateId;
+                _antimirovStateArrayInverse[coreStateId] = nfaStateId;
                 return nfaStateId;
             }
         }
@@ -579,10 +562,10 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <summary>Gets the core state corresponding to the NFA state</summary>
         public DfaMatchingState<TElement> GetCoreState(int nfaStateId)
         {
-            Debug.Assert(_statearray is not null);
-            Debug.Assert(nfaStateId < _antimirovStatearray.Length);
-            Debug.Assert(_antimirovStatearray[nfaStateId] < _statearray.Length);
-            return _statearray[_antimirovStatearray[nfaStateId]];
+            Debug.Assert(_stateArray is not null);
+            Debug.Assert(nfaStateId < _antimirovStateArray.Length);
+            Debug.Assert(_antimirovStateArray[nfaStateId] < _stateArray.Length);
+            return _stateArray[_antimirovStateArray[nfaStateId]];
         }
 
         /// <summary>Critical region for defining a new core transition</summary>
@@ -602,7 +585,7 @@ namespace System.Text.RegularExpressions.Symbolic
                     // - not already in Antimirov mode,
                     // - the maximum bound has been reached,
                     // - and the target state is an OR-node so that Antimirov mode actually makes sense
-                    if (!_antimirov && targetState.Id >= SymbolicRegexMatcher<TElement>.AntimirovThreshold && targetState.Node.Kind == SymbolicRegexKind.Or)
+                    if (!_antimirov && targetState.Id >= SymbolicRegexMatcher<TElement>.AntimirovThreshold && targetState.Node.Kind == SymbolicRegexNodeKind.Or)
                     {
                         InitializeAntimirovMode();
                     }
@@ -620,6 +603,7 @@ namespace System.Text.RegularExpressions.Symbolic
             lock (this)
             {
                 Debug.Assert(nfaoffset < _antimirovDelta.Length);
+
                 // check if meanwhile the nfaoffset has become defined possibly by another thread
                 List<int> targets = _antimirovDelta[nfaoffset];
                 if (targets is null)
@@ -627,28 +611,37 @@ namespace System.Text.RegularExpressions.Symbolic
                     // Create the underlying transition from the core state corresponding to the nfa state
                     DfaMatchingState<TElement> corestate = GetCoreState(nfaStateId);
                     int coreoffset = (corestate.Id << _mintermsCount) | mintermId;
-                    DfaMatchingState<TElement> coretarget = Volatile.Read(ref _delta[coreoffset]) ?? CreateNewTransition(corestate, minterm, coreoffset);
+                    DfaMatchingState<TElement> coretarget =
+                        Volatile.Read(ref _delta[coreoffset]) ??
+                        CreateNewTransition(corestate, minterm, coreoffset);
 
                     targets = new List<int>();
 
                     // TBD: OrderedOr
-                    if (coretarget.Node.Kind == SymbolicRegexKind.Or)
+                    if (coretarget.Node.Kind == SymbolicRegexNodeKind.Or)
                     {
                         Debug.Assert(coretarget.Node._alts is not null);
                         // Create separate NFA states for all members of a disjunction
                         // Here duplicate NFA states cannot arise because there are no duplicate nodes in the disjunction
                         foreach (SymbolicRegexNode<TElement> q in coretarget.Node._alts)
-                            targets.Add(MkNfaState(q, coretarget.PrevCharKind));
+                        {
+                            targets.Add(CreateNfaState(q, coretarget.PrevCharKind));
+                        }
+
                         Debug.Assert(targets.Count > 1);
                     }
                     else
                     {
                         // Add the single NFA target state correponding to the core target state
-                        if (!_antimirovStatearrayInverse.TryGetValue(coretarget.Id, out int nfaTargetId))
+                        if (!_antimirovStateArrayInverse.TryGetValue(coretarget.Id, out int nfaTargetId))
+                        {
                             nfaTargetId = MakeNewNfaState(coretarget.Id);
+                        }
+
                         targets.Add(nfaTargetId);
                     }
                 }
+
                 return targets;
             }
         }

@@ -842,7 +842,7 @@ namespace System.Text.RegularExpressions.Symbolic
 
         /// <summary>Inner loop for FindFinalStatePosition parameterized by an ITransition type.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool FindFinalStatePositionDeltas(ReadOnlySpan<char> input, int j, ref int i, ref CurrentState<TSetType> q, ref int watchdog, out int result)
+        private bool FindFinalStatePositionDeltas(ReadOnlySpan<char> input, int j, ref int i, ref CurrentState<TSetType> q, ref int matchLength, out int result)
         {
             do
             {
