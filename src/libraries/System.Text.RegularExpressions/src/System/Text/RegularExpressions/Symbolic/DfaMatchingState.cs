@@ -96,6 +96,11 @@ namespace System.Text.RegularExpressions.Symbolic
             return nextCharKind;
         }
 
+        public class NoMoreDfaException : Exception
+        {
+
+        }
+
         /// <summary>
         /// Compute the target state for the given input minterm.
         /// If <paramref name="minterm"/> is False this means that this is \n and it is the last character of the input.
@@ -103,6 +108,10 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="minterm">minterm corresponding to some input character or False corresponding to last \n</param>
         internal DfaMatchingState<T> Next(T minterm)
         {
+            Debug.Assert(Node._builder._stateArray is not null);
+            if (Node._builder._stateArray.Length >= SymbolicRegexMatcher<T>.AntimirovThreshold)
+                throw new NoMoreDfaException();
+
             uint nextCharKind = GetNextCharKind(ref minterm);
 
             // Combined character context
