@@ -353,6 +353,7 @@ namespace System.Text.RegularExpressions.Symbolic
                     Volatile.Read(ref builder._delta[dfaOffset]) ??
                     builder.CreateNewTransition(dfaMatchingState, minterm, dfaOffset);
 
+                //TBD: use perThreadData to pass the flag
                 if (builder._antimirov)
                 {
                     // CreateNewTransition switched from Brzozowski to Antimirov mode.
@@ -401,5 +402,207 @@ namespace System.Text.RegularExpressions.Symbolic
         {
             _dfaMatchingState = dfaMatchingState;
         }
+    }
+
+    internal interface ICurrentState<T> where T : notnull
+    {
+        public bool StartsWithLineAnchor { get; }
+        public bool IsNullable(uint nextCharKind);
+        public bool IsDeadend { get; }
+        public int FixedLength { get; }
+        public bool IsInitialState { get; }
+        public void SetMatchingState(DfaMatchingState<T> dfaMatchingState);
+        public void TakeTransition(int mintermId, T minterm, SymbolicRegexMatcher.PerThreadData perThreadData);
+    }
+
+    internal struct DfaState<T> : ICurrentState<T> where T : notnull
+    {
+        /// <summary>The DFA matching state instance.</summary>
+        public DfaMatchingState<T> _dfaMatchingState;
+
+        public DfaState(DfaMatchingState<T> dfaMatchingState) { _dfaMatchingState = dfaMatchingState; }
+
+        public bool StartsWithLineAnchor => _dfaMatchingState.StartsWithLineAnchor;
+
+        public bool IsNullable(uint nextCharKind) => _dfaMatchingState.IsNullable(nextCharKind);
+
+        /// <summary>Gets whether this is a dead-end state, meaning there are no transitions possible out of the state.</summary>
+        public bool IsDeadend => _dfaMatchingState.IsDeadend;
+
+        /// <summary>Gets the length of any fixed-length marker that exists for this state, or -1 if there is none.</summary>
+        public int FixedLength => _dfaMatchingState.FixedLength;
+
+        /// <summary>Gets whether this is an initial state.</summary>
+        public bool IsInitialState => _dfaMatchingState.IsInitialState;
+
+        /// <summary>Take the transition to the next state.</summary>
+        /// <remarks>This may cause a shift from  Brzozowski to Antimirov mode.</remarks>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void TakeTransition(int mintermId, T minterm, SymbolicRegexMatcher.PerThreadData perThreadData)
+        {
+            SymbolicRegexBuilder<T> builder = _dfaMatchingState.Node._builder;
+
+            Debug.Assert(builder._delta is not null);
+
+            int dfaOffset = (_dfaMatchingState.Id << builder._mintermsCount) | mintermId;
+            _dfaMatchingState =
+                Volatile.Read(ref builder._delta[dfaOffset]) ??
+                builder.CreateNewTransition(_dfaMatchingState, minterm, dfaOffset);
+        }
+
+        /// <summary>Sets dfaMatchingState as the current DFA state.</summary>
+        public void SetMatchingState(DfaMatchingState<T> dfaMatchingState)
+        {
+            _dfaMatchingState = dfaMatchingState;
+        }
+    }
+
+    internal struct NfaState<T> : ICurrentState<T> where T : notnull
+    {
+        /// <summary>The associated builder used to lazily add new DFA or NFA nodes to the graph.</summary>
+        private readonly SymbolicRegexBuilder<T> _builder;
+
+        /// <summary>The set of NFA states.</summary>
+        internal readonly HashSet<int>? _nfaStates;
+        /// <summary>The list of NFA states, in order.</summary>
+        /// <remarks>
+        /// The contents of this list is the same as <see cref="_nfaStates"/>, but it's used for maintaining
+        /// the order of the states whereas <see cref="_nfaStates"/> is used for O(1) lookup.
+        /// </remarks>
+        internal List<int>? _nfaStatesList;
+        /// <summary>Scratch list used temporarily to maintain the previous list of states.</summary>
+        internal List<int>? _nfaStatesListScratch;
+
+
+        public NfaState(DfaMatchingState<T> dfaMatchingState, SymbolicRegexMatcher.PerThreadData perThreadData)
+        {
+            _builder = dfaMatchingState.Node._builder;
+
+            // Initialize _nfaStates, _nfaStatesList, and _nfaStatesListScratch  from the PerThreadData cache.
+            // We want to create these lists/sets once per runner, and so pass around the PerThreadData that
+            // caches them, enabling each CurrentState instance to use those cached objects.  For _nfaStates
+            // and _nfaStatesList, we need to clear the collections in case they were left with data in them.
+            // For _nfaStatesListScratch, it'll be cleared before it's used later and thus we needn't clear it now.
+
+            _nfaStates = perThreadData.NfaStateSet;
+            if (_nfaStates is not null)
+            {
+                _nfaStates.Clear();
+            }
+            else
+            {
+                _nfaStates = perThreadData.NfaStateSet = new();
+            }
+
+            _nfaStatesList = perThreadData.NfaStateList;
+            if (_nfaStatesList is not null)
+            {
+                _nfaStatesList.Clear();
+            }
+            else
+            {
+                _nfaStatesList = perThreadData.NfaStateList = new();
+            }
+
+            _nfaStatesListScratch = perThreadData.NfaStateListScratch ??= new();
+
+            // Create NFA state set.
+            Debug.Assert(dfaMatchingState.Node.Kind == SymbolicRegexNodeKind.Or && dfaMatchingState.Node._alts is not null);
+            foreach (SymbolicRegexNode<T> member in dfaMatchingState.Node._alts)
+            {
+                // Create (possibly new) NFA states for all the members.
+                // Add their IDs to the current set of NFA states and into the list.
+                int nfaState = _builder.CreateNfaState(member, dfaMatchingState.PrevCharKind);
+                if (_nfaStates.Add(nfaState))
+                {
+                    // The list maintains the original order in which states are added (without duplicates).
+                    // TBD: OrderedOr may need to rely on that order.
+                    _nfaStatesList.Add(nfaState);
+                }
+            }
+        }
+
+        public bool StartsWithLineAnchor
+        {
+            get
+            {
+                // In NFA mode, check if any underlying core state starts with a line anchor.
+                List<int> states = _nfaStatesList!;
+                for (int i = 0; i < states.Count; i++)
+                {
+                    if (_builder.GetCoreState(states[i]).StartsWithLineAnchor)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        public bool IsNullable(uint nextCharKind)
+        {
+            // In NFA mode, check if any underlying core state is nullable.
+            List<int> states = _nfaStatesList!;
+            for (int i = 0; i < states.Count; i++)
+            {
+                if (_builder.GetCoreState(states[i]).IsNullable(nextCharKind))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>Gets whether this is a dead-end state, meaning there are no transitions possible out of the state.</summary>
+        /// <remarks>In NFA mode, an empty set of states means that it is a deadend.</remarks>
+        public bool IsDeadend => _nfaStates!.Count == 0;
+
+        /// <summary>Gets the length of any fixed-length marker that exists for this state, or -1 if there is none.</summary>
+        /// <summary>In NFA mode, there are no fixed-length markers.</summary>
+        public int FixedLength =>  -1;
+
+        /// <summary>Gets whether this is an initial state.</summary>
+        /// <summary>In NFA mode, no set of states qualifies as an initial state.</summary>
+        public bool IsInitialState => false;
+
+        /// <summary>Take the transition to the next NFA state.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void TakeTransition(int mintermId, T minterm, SymbolicRegexMatcher.PerThreadData perThreadData)
+        {
+            // Grab the sets/lists, swapping the current active states list with the scratch list.
+            HashSet<int> destStates = _nfaStates!;
+            List<int> destStatesList = _nfaStatesListScratch!;
+            List<int> sourceStates = _nfaStatesList!;
+            _nfaStatesList = destStatesList;
+            _nfaStatesListScratch = sourceStates;
+
+            // Transition into the new set of target NFA states.
+            destStates.Clear();
+            destStatesList.Clear();
+            for (int i = 0; i < sourceStates.Count; i++)
+            {
+                int source = sourceStates[i];
+
+                // Calculate the offset into the NFA transition table.
+                int nfaOffset = (source << _builder._mintermsCount) | mintermId;
+                List<int> targets =
+                    Volatile.Read(ref _builder._antimirovDelta[nfaOffset]) ??
+                    _builder.CreateNewNfaTransition(source, mintermId, minterm, nfaOffset);
+
+                // Add each non-duplicate target to the states list.
+                for (int j = 0; j < targets.Count; j++)
+                {
+                    if (destStates.Add(targets[j]))
+                    {
+                        destStatesList.Add(targets[j]);
+                    }
+                }
+            }
+        }
+
+        /// <summary>Sets dfaMatchingState as the current state.</summary>
+        public void SetMatchingState(DfaMatchingState<T>? dfaMatchingState) => Debug.Assert(false);
     }
 }

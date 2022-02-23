@@ -625,6 +625,7 @@ namespace System.Text.RegularExpressions.Symbolic
                         // Here duplicate NFA states cannot arise because there are no duplicate nodes in the disjunction
                         foreach (SymbolicRegexNode<TElement> q in coretarget.Node._alts)
                         {
+                            Debug.Assert(!q.IsNothing);
                             targets.Add(CreateNfaState(q, coretarget.PrevCharKind));
                         }
 
@@ -632,13 +633,18 @@ namespace System.Text.RegularExpressions.Symbolic
                     }
                     else
                     {
-                        // Add the single NFA target state correponding to the core target state
-                        if (!_antimirovStateArrayInverse.TryGetValue(coretarget.Id, out int nfaTargetId))
+                        // Omit deadend states from the target list of states
+                        // target list being empty means that the NFA state itself is a deadend
+                        if (!coretarget.IsDeadend)
                         {
-                            nfaTargetId = MakeNewNfaState(coretarget.Id);
-                        }
+                            // Add the single NFA target state correponding to the core target state
+                            if (!_antimirovStateArrayInverse.TryGetValue(coretarget.Id, out int nfaTargetId))
+                            {
+                                nfaTargetId = MakeNewNfaState(coretarget.Id);
+                            }
 
-                        targets.Add(nfaTargetId);
+                            targets.Add(nfaTargetId);
+                        }
                     }
                 }
 

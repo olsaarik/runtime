@@ -365,7 +365,7 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="state">passed in as the source state and upon return is set to the new target state</param>
         /// <param name="perThreadData">Per thread data reused between calls.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void Delta(ReadOnlySpan<char> input, int i, ref CurrentState<TSetType> state, PerThreadData perThreadData)
+        private void Delta<TState>(ReadOnlySpan<char> input, int i, ref TState state, PerThreadData perThreadData) where TState : struct, ICurrentState<TSetType>
         {
             TSetType[]? minterms = _builder._minterms;
             Debug.Assert(minterms is not null);
@@ -380,7 +380,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 minterms[mintermId] :
                 _builder._solver.False; // minterm=False represents \Z
 
-            CurrentState<TSetType>.TakeTransition(ref state, mintermId, minterm, perThreadData);
+            state.TakeTransition(mintermId, minterm, perThreadData);
         }
 
         private List<(DfaMatchingState<TSetType>, List<DerivativeEffect>)> CreateNewCapturingTransitions(DfaMatchingState<TSetType> state, TSetType minterm, int offset)
@@ -440,7 +440,7 @@ namespace System.Text.RegularExpressions.Symbolic
             }
 
             // Start state of the dot-star pattern, which in general depends on the previous character kind in the input.
-            CurrentState<TSetType> startState = new CurrentState<TSetType>(_dotstarredInitialStates[GetCharKind(input, startat - 1)], perThreadData);
+            ICurrentState<TSetType> startState = new DfaState<TSetType>(_dotstarredInitialStates[GetCharKind(input, startat - 1)]);
             // Phase 1:
             // Determine whether there is a match by finding the first final state position.  This only tells
             // us whether there is a match but needn't give us the longest possible match. This may return -1 as
@@ -513,7 +513,7 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="i">inclusive start position</param>
         /// <param name="perThreadData">Per thread data reused between calls.</param>
         /// <returns>the match end position</returns>
-        private int FindEndPosition(ref CurrentState<TSetType> state, ReadOnlySpan<char> input, int i, PerThreadData perThreadData)
+        private int FindEndPosition(ref ICurrentState<TSetType> state, ReadOnlySpan<char> input, int i, PerThreadData perThreadData)
         {
             int i_end = input.Length;
 
@@ -521,7 +521,7 @@ namespace System.Text.RegularExpressions.Symbolic
             _builder._antimirov = false;
 
             // Pick the correct start state based on previous character kind.
-            state.SetDfaMatchingState(_initialStates[GetCharKind(input, i - 1)]);
+            state.SetMatchingState(_initialStates[GetCharKind(input, i - 1)]);
 
             if (state.IsNullable(GetCharKind(input, i)))
             {
@@ -531,8 +531,21 @@ namespace System.Text.RegularExpressions.Symbolic
 
             while (i < input.Length)
             {
-                int j = Math.Min(input.Length, i + AntimirovThresholdLeeway);
-                bool done = FindEndPositionDeltas(input, ref i, j, ref state, ref i_end, perThreadData);
+                bool done;
+                if (_builder._antimirov)
+                {
+                    NfaState<TSetType> qNfa = (state is DfaState<TSetType> q1 ? new NfaState<TSetType>(q1._dfaMatchingState, perThreadData) : (NfaState<TSetType>)state);
+                    done = FindEndPositionDeltas(input, ref i, input.Length, ref qNfa, ref i_end, perThreadData);
+                    state = qNfa;
+                }
+                else
+                {
+                    Debug.Assert(state is DfaState<TSetType>);
+                    int j = Math.Min(input.Length, i + AntimirovThresholdLeeway);
+                    var qDfa = (DfaState<TSetType>)state;
+                    done = FindEndPositionDeltas(input, ref i, j, ref qDfa, ref i_end, perThreadData);
+                    state = qDfa;
+                }
 
                 if (done)
                 {
@@ -546,7 +559,7 @@ namespace System.Text.RegularExpressions.Symbolic
 
         /// <summary>Inner loop for FindEndPosition parameterized by an ITransition type.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool FindEndPositionDeltas(ReadOnlySpan<char> input, ref int i, int j, ref CurrentState<TSetType> q, ref int i_end, PerThreadData perThreadData)
+        private bool FindEndPositionDeltas<TState>(ReadOnlySpan<char> input, ref int i, int j, ref TState q, ref int i_end, PerThreadData perThreadData) where TState : struct, ICurrentState<TSetType>
         {
             do
             {
@@ -701,14 +714,14 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="match_start_boundary">do not pass this boundary when walking back</param>
         /// <param name="perThreadData">Per thread data reused between calls.</param>
         /// <returns></returns>
-        private int FindStartPosition(ref CurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int match_start_boundary, PerThreadData perThreadData)
+        private int FindStartPosition(ref ICurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int match_start_boundary, PerThreadData perThreadData)
         {
             // Reset to DFA mode
             _builder._antimirov = false;
 
             // Fetch the correct start state for the reverse pattern.
             // This depends on previous character --- which, because going backwards, is character number i+1.
-            q.SetDfaMatchingState(_reverseInitialStates[GetCharKind(input, i + 1)]);
+            q.SetMatchingState(_reverseInitialStates[GetCharKind(input, i + 1)]);
 
             if (i == -1)
             {
@@ -728,7 +741,20 @@ namespace System.Text.RegularExpressions.Symbolic
             while (i >= match_start_boundary)
             {
                 int j = Math.Max(match_start_boundary, i - AntimirovThresholdLeeway);
-                bool done = FindStartPositionDeltas(input, ref i, j, ref q, ref last_start, perThreadData);
+                bool done;
+                if (_builder._antimirov)
+                {
+                    NfaState<TSetType> qNfa = (q is DfaState<TSetType> q1 ? new NfaState<TSetType>(q1._dfaMatchingState, perThreadData) : (NfaState<TSetType>)q);
+                    done = FindStartPositionDeltas(input, ref i, j, ref qNfa, ref last_start, perThreadData);
+                    q = qNfa;
+                }
+                else
+                {
+                    Debug.Assert(q is DfaState<TSetType>);
+                    var qDfa = (DfaState<TSetType>)q;
+                    done = FindStartPositionDeltas(input, ref i, j, ref qDfa, ref last_start, perThreadData);
+                    q = qDfa;
+                }
 
                 if (done)
                 {
@@ -742,14 +768,14 @@ namespace System.Text.RegularExpressions.Symbolic
 
         // Inner loop for FindStartPosition parameterized by an ITransition type.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool FindStartPositionDeltas(ReadOnlySpan<char> input, ref int i, int j, ref CurrentState<TSetType> q, ref int last_start, PerThreadData perThreadData)
+        private bool FindStartPositionDeltas<TState>(ReadOnlySpan<char> input, ref int i, int j, ref TState q, ref int last_start, PerThreadData perThreadData) where TState : struct, ICurrentState<TSetType>
         {
             do
             {
                 Delta(input, i, ref q, perThreadData);
 
                 // Reached a deadend state, thus the earliest match start point must have occurred already.
-                if (q.IsNothing)
+                if (q.IsDeadend)
                 {
                     return true;
                 }
@@ -776,11 +802,11 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="initialStateIndex">last position the initial state of <see cref="_dotStarredPattern"/> was visited</param>
         /// <param name="matchLength">length of match when positive</param>
         /// <param name="perThreadData">Per thread data reused between calls.</param>
-        private int FindFinalStatePosition(ref CurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int timeoutOccursAt, out int initialStateIndex, out int matchLength, PerThreadData perThreadData)
+        private int FindFinalStatePosition(ref ICurrentState<TSetType> q, ReadOnlySpan<char> input, int i, int timeoutOccursAt, out int initialStateIndex, out int matchLength, PerThreadData perThreadData)
         {
             initialStateIndex = i;
 
-            if (q.IsNothing)
+            if (q.IsDeadend)
             {
                 // If q is nothing then it is a deadend from the beginning this happens for example when the original
                 // regex started with start anchor and prevCharKindId is not Start
@@ -821,8 +847,8 @@ namespace System.Text.RegularExpressions.Symbolic
                         // the start state must be updated
                         // to reflect the kind of the previous character
                         // when anchors are not used, q will remain the same state
-                        q.SetDfaMatchingState(_dotstarredInitialStates[GetCharKind(input, i - 1)]);
-                        if (q.IsNothing)
+                        q.SetMatchingState(_dotstarredInitialStates[GetCharKind(input, i - 1)]);
+                        if (q.IsDeadend)
                         {
                             return NoMatchExists;
                         }
@@ -830,8 +856,22 @@ namespace System.Text.RegularExpressions.Symbolic
                 }
 
                 int result;
-                int j = Math.Min(input.Length, i + AntimirovThresholdLeeway);
-                bool done = FindFinalStatePositionDeltas(input, j, ref i, ref q, ref matchLength, out result, perThreadData);
+
+                bool done;
+                if (_builder._antimirov)
+                {
+                    NfaState<TSetType> qNfa = (q is DfaState<TSetType> q1 ? new NfaState<TSetType>(q1._dfaMatchingState, perThreadData) : (NfaState<TSetType>)q);
+                    done = FindFinalStatePositionDeltas(input, input.Length, ref i, ref qNfa, ref matchLength, out result, perThreadData);
+                    q = qNfa;
+                }
+                else
+                {
+                    Debug.Assert(q is DfaState<TSetType>);
+                    int j = Math.Min(input.Length, i + AntimirovThresholdLeeway);
+                    var qDfa = (DfaState<TSetType>)q;
+                    done = FindFinalStatePositionDeltas(input, j, ref i, ref qDfa, ref matchLength, out result, perThreadData);
+                    q = qDfa;
+                }
 
                 if (done)
                 {
@@ -850,7 +890,7 @@ namespace System.Text.RegularExpressions.Symbolic
 
         /// <summary>Inner loop for FindFinalStatePosition parameterized by an ITransition type.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool FindFinalStatePositionDeltas(ReadOnlySpan<char> input, int j, ref int i, ref CurrentState<TSetType> q, ref int matchLength, out int result, PerThreadData perThreadData)
+        private bool FindFinalStatePositionDeltas<TState>(ReadOnlySpan<char> input, int j, ref int i, ref TState q, ref int matchLength, out int result, PerThreadData perThreadData) where TState : struct, ICurrentState<TSetType>
         {
             do
             {
@@ -864,7 +904,7 @@ namespace System.Text.RegularExpressions.Symbolic
                     return true;
                 }
 
-                if (q.IsNothing)
+                if (q.IsDeadend)
                 {
                     // q is a deadend state so any further search is meaningless
                     result = NoMatchExists;
