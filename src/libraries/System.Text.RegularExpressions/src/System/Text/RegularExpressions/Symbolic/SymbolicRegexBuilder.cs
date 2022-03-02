@@ -51,12 +51,6 @@ namespace System.Text.RegularExpressions.Symbolic
         private SymbolicRegexNode<TElement>? _nwbAnchor;
         internal SymbolicRegexNode<TElement> NonBoundaryAnchor => _nwbAnchor ??= SymbolicRegexNode<TElement>.CreateBoundaryAnchor(this, SymbolicRegexNodeKind.NonBoundaryAnchor);
 
-        private SymbolicRegexSet<TElement>? _fullSet;
-        internal SymbolicRegexSet<TElement> FullSet => _fullSet ??= SymbolicRegexSet<TElement>.CreateFull(this);
-
-        private SymbolicRegexSet<TElement>? _emptySet;
-        internal SymbolicRegexSet<TElement> EmptySet => _emptySet ??= SymbolicRegexSet<TElement>.CreateEmpty(this);
-
         private SymbolicRegexNode<TElement>? _eagerEmptyLoop;
         internal SymbolicRegexNode<TElement> EagerEmptyLoop => _eagerEmptyLoop ??= SymbolicRegexNode<TElement>.CreateEagerEmptyLoop(this, Epsilon);
 
@@ -78,7 +72,6 @@ namespace System.Text.RegularExpressions.Symbolic
             SymbolicRegexNode<TElement>?, // _left
             SymbolicRegexNode<TElement>?, // _right
             int, int, TElement?,          // _lower, _upper, _set
-            SymbolicRegexSet<TElement>?,
             SymbolicRegexInfo), SymbolicRegexNode<TElement>> _nodeCache = new();
 
 #if DEBUG
@@ -189,12 +182,6 @@ namespace System.Text.RegularExpressions.Symbolic
         }
 
         /// <summary>
-        /// Make a disjunction of given nodes, simplify by eliminating any regex that accepts no inputs
-        /// </summary>
-        internal SymbolicRegexNode<TElement> Or(params SymbolicRegexNode<TElement>[] nodes) =>
-            SymbolicRegexNode<TElement>.Or(this, nodes);
-
-        /// <summary>
         /// Make an ordered disjunction of given nodes, simplify by eliminating any regex that accepts no inputs
         /// </summary>
         internal SymbolicRegexNode<TElement> OrderedOr(params SymbolicRegexNode<TElement>[] nodes)
@@ -220,37 +207,6 @@ namespace System.Text.RegularExpressions.Symbolic
 
             return or ?? _nothing;
         }
-
-        /// <summary>
-        /// Make a conjunction of given nodes, simplify by eliminating nodes that accept everything
-        /// </summary>
-        internal SymbolicRegexNode<TElement> And(params SymbolicRegexNode<TElement>[] nodes) =>
-            SymbolicRegexNode<TElement>.And(this, nodes);
-
-        /// <summary>
-        /// Make a disjunction of given set of nodes, simplify by eliminating any regex that accepts no inputs
-        /// </summary>
-        internal SymbolicRegexNode<TElement> Or(SymbolicRegexSet<TElement> set) =>
-            set.IsNothing ? _nothing :
-            set.IsEverything ? _anyStar :
-            set.IsSingleton ? set.GetSingletonElement() :
-            SymbolicRegexNode<TElement>.Or(this, set);
-
-        internal SymbolicRegexNode<TElement> Or(SymbolicRegexNode<TElement> x, SymbolicRegexNode<TElement> y) =>
-            x == _anyStar || y == _anyStar ? _anyStar :
-            x == _nothing ? y :
-            y == _nothing ? x :
-            SymbolicRegexNode<TElement>.Or(this, x, y);
-
-        /// <summary>
-        /// Make a conjunction of given set, simplify by eliminating any regex that accepts all inputs,
-        /// returns the empty regex if the regex accepts nothing
-        /// </summary>
-        internal SymbolicRegexNode<TElement> And(SymbolicRegexSet<TElement> set) =>
-            set.IsNothing ? _nothing :
-            set.IsEverything ? _anyStar :
-            set.IsSingleton ? set.GetSingletonElement() :
-            SymbolicRegexNode<TElement>.And(this, set);
 
         /// <summary>
         /// Make a concatenation of given nodes, if any regex is nothing then return nothing, eliminate
@@ -351,13 +307,6 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <summary>Creates a fixed length marker for the end of a sequence.</summary>
         internal SymbolicRegexNode<TElement> CreateFixedLengthMarker(int length) => SymbolicRegexNode<TElement>.CreateFixedLengthMarker(this, length);
 
-        /// <summary>
-        /// Make a complemented node
-        /// </summary>
-        /// <param name="node">node to be complemented</param>
-        /// <returns></returns>
-        internal SymbolicRegexNode<TElement> Not(SymbolicRegexNode<TElement> node) => SymbolicRegexNode<TElement>.Not(this, node);
-
         internal SymbolicRegexNode<TElement> CreateCapture(SymbolicRegexNode<TElement> child, int captureNum) => CreateConcat(CreateCaptureStart(captureNum), CreateConcat(child, CreateCaptureEnd(captureNum)));
 
         internal SymbolicRegexNode<TElement> CreateCaptureStart(int captureNum) => SymbolicRegexNode<TElement>.CreateCaptureStart(this, captureNum);
@@ -411,17 +360,9 @@ namespace System.Text.RegularExpressions.Symbolic
                     Debug.Assert(sr._left is not null);
                     return builder.CreateLoop(Transform(sr._left, builder, predicateTransformer), sr.IsLazy, sr._lower, sr._upper);
 
-                case SymbolicRegexNodeKind.Or:
-                    Debug.Assert(sr._alts is not null);
-                    return builder.Or(sr._alts.Transform(builder, predicateTransformer));
-
                 case SymbolicRegexNodeKind.OrderedOr:
                     Debug.Assert(sr._left is not null && sr._right is not null);
                     return builder.OrderedOr(Transform(sr._left, builder, predicateTransformer), Transform(sr._right, builder, predicateTransformer));
-
-                case SymbolicRegexNodeKind.And:
-                    Debug.Assert(sr._alts is not null);
-                    return builder.And(sr._alts.Transform(builder, predicateTransformer));
 
                 case SymbolicRegexNodeKind.CaptureStart:
                     return builder.CreateCaptureStart(sr._lower);
@@ -430,20 +371,12 @@ namespace System.Text.RegularExpressions.Symbolic
                     return builder.CreateCaptureEnd(sr._lower);
 
                 case SymbolicRegexNodeKind.Concat:
-                    {
-                        List<SymbolicRegexNode<TElement>> sr_elems = sr.ToList();
-                        SymbolicRegexNode<T>[] sr_elems_trasformed = new SymbolicRegexNode<T>[sr_elems.Count];
-                        for (int i = 0; i < sr_elems.Count; i++)
-                        {
-                            sr_elems_trasformed[i] = Transform(sr_elems[i], builder, predicateTransformer);
-                        }
-                        return builder.CreateConcat(sr_elems_trasformed, false);
-                    }
+                    Debug.Assert(sr._left is not null && sr._right is not null);
+                    return builder.CreateConcat(Transform(sr._left, builder, predicateTransformer), Transform(sr._right, builder, predicateTransformer));
 
                 default:
-                    Debug.Assert(sr._kind == SymbolicRegexNodeKind.Not);
-                    Debug.Assert(sr._left is not null);
-                    return builder.Not(Transform(sr._left, builder, predicateTransformer));
+                    Debug.Fail($"{nameof(Transform)}:{sr._kind}");
+                    return null;
             }
         }
 
@@ -452,10 +385,9 @@ namespace System.Text.RegularExpressions.Symbolic
         /// </summary>
         /// <param name="node">the pattern that this state will represent</param>
         /// <param name="prevCharKind">the kind of the character that led to this state</param>
-        /// <param name="disableCaching">if true, then state won't be cached</param>
         /// <param name="capturing">whether to use the separate space of states with capturing transitions or not</param>
         /// <returns></returns>
-        public DfaMatchingState<TElement> CreateState(SymbolicRegexNode<TElement> node, uint prevCharKind, bool disableCaching = false, bool capturing = false)
+        public DfaMatchingState<TElement> CreateState(SymbolicRegexNode<TElement> node, uint prevCharKind, bool capturing = false)
         {
             //first prune the anchors in the node
             TElement WLpred = _wordLetterPredicateForAnchors;
@@ -470,16 +402,7 @@ namespace System.Text.RegularExpressions.Symbolic
             var s = new DfaMatchingState<TElement>(pruned_node, prevCharKind);
             if (!(capturing ? _capturingStateCache : _stateCache).TryGetValue(s, out DfaMatchingState<TElement>? state))
             {
-                // do not cache set of states as states in NFA mode
-                if (disableCaching && pruned_node.Kind == SymbolicRegexNodeKind.Or)
-                {
-                    s.Id = -1; // mark the Id as invalid
-                    state = s;
-                }
-                else
-                {
-                    state = MakeNewState(s, capturing);
-                }
+                state = MakeNewState(s, capturing);
             }
 
             return state;
@@ -525,8 +448,8 @@ namespace System.Text.RegularExpressions.Symbolic
         /// </summary>
         public int CreateNfaState(SymbolicRegexNode<TElement> node, uint prevCharKind)
         {
-            // TBD: OrderedOr
-            Debug.Assert(node.Kind != SymbolicRegexNodeKind.Or);
+            // Or nodes should have been broken up into separate states
+            Debug.Assert(node.Kind != SymbolicRegexNodeKind.OrderedOr);
 
             // First make the underlying core state
             DfaMatchingState<TElement> coreState = CreateState(node, prevCharKind);
@@ -623,12 +546,11 @@ namespace System.Text.RegularExpressions.Symbolic
                     DfaMatchingState<TElement>? coreTarget = _delta[coreOffset] ?? CreateNewTransition(coreState, mintermId, coreOffset);
 
                     // TBD: OrderedOr
-                    if (coreTarget.Node.Kind == SymbolicRegexNodeKind.Or)
+                    if (coreTarget.Node.Kind == SymbolicRegexNodeKind.OrderedOr)
                     {
                         // Create separate NFA states for all members of a disjunction
                         // Here duplicate NFA states cannot arise because there are no duplicate nodes in the disjunction
-                        SymbolicRegexSet<TElement>? alts = coreTarget.Node._alts;
-                        Debug.Assert(alts is not null);
+                        List<SymbolicRegexNode<TElement>> alts = coreTarget.Node.ToList(listKind: SymbolicRegexNodeKind.OrderedOr);
 
                         targets = new int[alts.Count];
                         int targetIndex = 0;

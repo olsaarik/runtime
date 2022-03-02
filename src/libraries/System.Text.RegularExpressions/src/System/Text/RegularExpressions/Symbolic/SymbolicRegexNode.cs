@@ -27,7 +27,6 @@ namespace System.Text.RegularExpressions.Symbolic
         internal readonly S? _set;
         internal readonly SymbolicRegexNode<S>? _left;
         internal readonly SymbolicRegexNode<S>? _right;
-        internal readonly SymbolicRegexSet<S>? _alts;
 
         /// <summary>
         /// Caches nullability of this node for any given context (0 &lt;= context &lt; ContextLimit)
@@ -45,9 +44,8 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <param name="lower">lower bound of a loop</param>
         /// <param name="upper">upper boubd of a loop</param>
         /// <param name="set">singelton set</param>
-        /// <param name="alts">alternatives set of a disjunction or conjunction</param>
         /// <param name="info">misc flags including laziness</param>
-        private SymbolicRegexNode(SymbolicRegexBuilder<S> builder, SymbolicRegexNodeKind kind, SymbolicRegexNode<S>? left, SymbolicRegexNode<S>? right, int lower, int upper, S? set, SymbolicRegexSet<S>? alts, SymbolicRegexInfo info)
+        private SymbolicRegexNode(SymbolicRegexBuilder<S> builder, SymbolicRegexNodeKind kind, SymbolicRegexNode<S>? left, SymbolicRegexNode<S>? right, int lower, int upper, S? set, SymbolicRegexInfo info)
         {
             _builder = builder;
             _kind = kind;
@@ -56,59 +54,24 @@ namespace System.Text.RegularExpressions.Symbolic
             _lower = lower;
             _upper = upper;
             _set = set;
-            _alts = alts;
             _info = info;
-            _hashcode = ComputeHashCode();
             _startSet = ComputeStartSet();
             _nullabilityCache = info.StartsWithSomeAnchor && info.CanBeNullable ? new byte[CharKind.ContextLimit] : null;
         }
 
-        private bool _isInternalizedUnion;
-
         /// <summary> Create a new node or retrieve one from the builder _nodeCache</summary>
-        private static SymbolicRegexNode<S> Create(SymbolicRegexBuilder<S> builder, SymbolicRegexNodeKind kind, SymbolicRegexNode<S>? left, SymbolicRegexNode<S>? right, int lower, int upper, S? set, SymbolicRegexSet<S>? alts, SymbolicRegexInfo info)
+        private static SymbolicRegexNode<S> Create(SymbolicRegexBuilder<S> builder, SymbolicRegexNodeKind kind, SymbolicRegexNode<S>? left, SymbolicRegexNode<S>? right, int lower, int upper, S? set, SymbolicRegexInfo info)
         {
             SymbolicRegexNode<S>? node;
-            var key = (kind, left, right, lower, upper, set, alts, info);
+            var key = (kind, left, right, lower, upper, set, info);
             if (!builder._nodeCache.TryGetValue(key, out node))
             {
-                // Do not internalize top level Or-nodes or else NFA mode will become ineffective
-                if (kind == SymbolicRegexNodeKind.Or)
-                {
-                    node = new(builder, kind, left, right, lower, upper, set, alts, info);
-                    return node;
-                }
-
-                left = left == null || left._kind != SymbolicRegexNodeKind.Or || left._isInternalizedUnion ? left : Internalize(left);
-                right = right == null || right._kind != SymbolicRegexNodeKind.Or || right._isInternalizedUnion ? right : Internalize(right);
-
-                node = new(builder, kind, left, right, lower, upper, set, alts, info);
+                node = new(builder, kind, left, right, lower, upper, set, info);
                 builder._nodeCache[key] = node;
             }
 
             Debug.Assert(node is not null);
             return node;
-        }
-
-        /// <summary> Internalize an Or-node that is not yet internalized</summary>
-        private static SymbolicRegexNode<S> Internalize(SymbolicRegexNode<S> node)
-        {
-            Debug.Assert(node._kind == SymbolicRegexNodeKind.Or && !node._isInternalizedUnion);
-
-            (SymbolicRegexNodeKind, SymbolicRegexNode<S>?, SymbolicRegexNode<S>?, int, int, S?, SymbolicRegexSet<S>?, SymbolicRegexInfo) node_key =
-                (SymbolicRegexNodeKind.Or, null, null, -1, -1, default(S), node._alts, node._info);
-            SymbolicRegexNode<S>? node1;
-            if (node._builder._nodeCache.TryGetValue(node_key, out node1))
-            {
-                Debug.Assert(node1 is not null && node1._isInternalizedUnion);
-                return node1;
-            }
-            else
-            {
-                node._isInternalizedUnion = true;
-                node._builder._nodeCache[node_key] = node;
-                return node;
-            }
         }
 
         /// <summary>True if this node only involves lazy loops</summary>
@@ -129,44 +92,53 @@ namespace System.Text.RegularExpressions.Symbolic
 
         internal SymbolicRegexInfo _info;
 
-        private readonly int _hashcode;
+        public delegate void NodeRefArgAction<TArg>(SymbolicRegexNode<S> node, ref TArg arg2);
+        /// <summary>
+        /// Calls the callback for each element of a Concat or OrderedOr. This version takes the additional argument by reference.
+        /// </summary>
+        /// <typeparam name="TArg">the type of the additional argument</typeparam>
+        /// <param name="callback">the action to call for each element</param>
+        /// <param name="arg">an additional argument given to the callback</param>
+        /// <param name="listKind">the kind of list, either Concat or OrderedOr</param>
+        public void ForListElements<TArg>(NodeRefArgAction<TArg> callback, ref TArg arg, SymbolicRegexNodeKind listKind)
+        {
+            Debug.Assert(listKind == SymbolicRegexNodeKind.Concat || listKind == SymbolicRegexNodeKind.OrderedOr);
 
+            SymbolicRegexNode<S> node = this;
+            while (node._kind == listKind)
+            {
+                Debug.Assert(node._left is not null && node._right is not null);
+                // All lists are right associative
+                Debug.Assert(node._left._kind != listKind);
+                callback(node._left, ref arg);
+                node = node._right;
+            }
+
+            callback(node, ref arg);
+        }
+
+        /// <summary>
+        /// Calls the callback for each element of a Concat or OrderedOr. This version takes the additional argument by value.
+        /// </summary>
+        /// <typeparam name="TArg">the type of the additional argument</typeparam>
+        /// <param name="callback">the action to call for each element</param>
+        /// <param name="arg">an additional argument given to the callback</param>
+        /// <param name="listKind">the kind of list, either Concat or OrderedOr</param>
+        public void ForListElements<TArg>(Action<SymbolicRegexNode<S>, TArg> callback, TArg arg, SymbolicRegexNodeKind listKind)
+        {
+            (Action<SymbolicRegexNode<S>, TArg> Callback, TArg ActualArg) newArg = (callback, arg);
+            ForListElements(static (SymbolicRegexNode<S>  node, ref (Action<SymbolicRegexNode<S>, TArg> Callback, TArg ActualArg) s) =>
+                s.Callback(node, s.ActualArg), ref newArg, listKind);
+        }
 
         /// <summary>Converts a Concat or OrderdOr into an array, returns anything else in a singleton array.</summary>
         /// <param name="list">a list to insert the elements into, or null to return results in a new list</param>
         /// <param name="listKind">kind of node to consider as the list builder</param>
-        public List<SymbolicRegexNode<S>> ToList(List<SymbolicRegexNode<S>>? list = null, SymbolicRegexNodeKind listKind = SymbolicRegexNodeKind.Concat)
+        public List<SymbolicRegexNode<S>> ToList(SymbolicRegexNodeKind listKind, List<SymbolicRegexNode<S>>? list = null)
         {
-            Debug.Assert(listKind == SymbolicRegexNodeKind.Concat || listKind == SymbolicRegexNodeKind.OrderedOr);
             list ??= new List<SymbolicRegexNode<S>>();
-            AppendToList(this, list, listKind);
+            ForListElements((e, s) => s.Add(e), list, listKind);
             return list;
-
-            static void AppendToList(SymbolicRegexNode<S> concat, List<SymbolicRegexNode<S>> list, SymbolicRegexNodeKind listKind)
-            {
-                if (!StackHelper.TryEnsureSufficientExecutionStack())
-                {
-                    StackHelper.CallOnEmptyStack(AppendToList, concat, list, listKind);
-                    return;
-                }
-
-                SymbolicRegexNode<S> node = concat;
-                while (node._kind == listKind)
-                {
-                    Debug.Assert(node._left is not null && node._right is not null);
-                    if (node._left._kind == listKind)
-                    {
-                        AppendToList(node._left, list, listKind);
-                    }
-                    else
-                    {
-                        list.Add(node._left);
-                    }
-                    node = node._right;
-                }
-
-                list.Add(node);
-            }
         }
 
         /// <summary>
@@ -217,20 +189,9 @@ namespace System.Text.RegularExpressions.Symbolic
                         is_nullable = _left.IsNullableFor(context) && _right.IsNullableFor(context);
                         break;
 
-                    case SymbolicRegexNodeKind.Or:
-                    case SymbolicRegexNodeKind.And:
-                        Debug.Assert(_alts is not null);
-                        is_nullable = _alts.IsNullableFor(context);
-                        break;
-
                     case SymbolicRegexNodeKind.OrderedOr:
                         Debug.Assert(_left is not null && _right is not null);
                         is_nullable = _left.IsNullableFor(context) || _right.IsNullableFor(context);
-                        break;
-
-                    case SymbolicRegexNodeKind.Not:
-                        Debug.Assert(_left is not null);
-                        is_nullable = !_left.IsNullableFor(context);
                         break;
 
                     case SymbolicRegexNodeKind.BeginningAnchor:
@@ -374,19 +335,19 @@ namespace System.Text.RegularExpressions.Symbolic
         #region called only once, in the constructor of SymbolicRegexBuilder
 
         internal static SymbolicRegexNode<S> CreateFalse(SymbolicRegexBuilder<S> builder) =>
-            Create(builder, SymbolicRegexNodeKind.Singleton, null, null, -1, -1, builder._solver.False, null, SymbolicRegexInfo.Create());
+            Create(builder, SymbolicRegexNodeKind.Singleton, null, null, -1, -1, builder._solver.False, SymbolicRegexInfo.Create());
 
         internal static SymbolicRegexNode<S> CreateTrue(SymbolicRegexBuilder<S> builder) =>
-            Create(builder, SymbolicRegexNodeKind.Singleton, null, null, -1, -1, builder._solver.True, null, SymbolicRegexInfo.Create(containsSomeCharacter: true));
+            Create(builder, SymbolicRegexNodeKind.Singleton, null, null, -1, -1, builder._solver.True, SymbolicRegexInfo.Create(containsSomeCharacter: true));
 
         internal static SymbolicRegexNode<S> CreateFixedLengthMarker(SymbolicRegexBuilder<S> builder, int length) =>
-            Create(builder, SymbolicRegexNodeKind.FixedLengthMarker, null, null, length, -1, default, null, SymbolicRegexInfo.Create(isAlwaysNullable: true));
+            Create(builder, SymbolicRegexNodeKind.FixedLengthMarker, null, null, length, -1, default, SymbolicRegexInfo.Create(isAlwaysNullable: true));
 
         internal static SymbolicRegexNode<S> CreateEpsilon(SymbolicRegexBuilder<S> builder) =>
-            Create(builder, SymbolicRegexNodeKind.Epsilon, null, null, -1, -1, default, null, SymbolicRegexInfo.Create(isAlwaysNullable: true));
+            Create(builder, SymbolicRegexNodeKind.Epsilon, null, null, -1, -1, default, SymbolicRegexInfo.Create(isAlwaysNullable: true));
 
         internal static SymbolicRegexNode<S> CreateEagerEmptyLoop(SymbolicRegexBuilder<S> builder, SymbolicRegexNode<S> body) =>
-            Create(builder, SymbolicRegexNodeKind.Loop, body, null, 0, 0, default, null, SymbolicRegexInfo.Create(isAlwaysNullable: true, isLazy: false));
+            Create(builder, SymbolicRegexNodeKind.Loop, body, null, 0, 0, default, SymbolicRegexInfo.Create(isAlwaysNullable: true, isLazy: false));
 
         internal static SymbolicRegexNode<S> CreateBeginEndAnchor(SymbolicRegexBuilder<S> builder, SymbolicRegexNodeKind kind)
         {
@@ -394,78 +355,31 @@ namespace System.Text.RegularExpressions.Symbolic
                 SymbolicRegexNodeKind.BeginningAnchor or SymbolicRegexNodeKind.EndAnchor or
                 SymbolicRegexNodeKind.EndAnchorZ or SymbolicRegexNodeKind.EndAnchorZReverse or
                 SymbolicRegexNodeKind.EOLAnchor or SymbolicRegexNodeKind.BOLAnchor);
-            return Create(builder, kind, null, null, -1, -1, default, null, SymbolicRegexInfo.Create(startsWithLineAnchor: true, canBeNullable: true));
+            return Create(builder, kind, null, null, -1, -1, default, SymbolicRegexInfo.Create(startsWithLineAnchor: true, canBeNullable: true));
         }
 
         internal static SymbolicRegexNode<S> CreateBoundaryAnchor(SymbolicRegexBuilder<S> builder, SymbolicRegexNodeKind kind)
         {
             Debug.Assert(kind is SymbolicRegexNodeKind.BoundaryAnchor or SymbolicRegexNodeKind.NonBoundaryAnchor);
-            return Create(builder, kind, null, null, -1, -1, default, null, SymbolicRegexInfo.Create(startsWithBoundaryAnchor: true, canBeNullable: true));
+            return Create(builder, kind, null, null, -1, -1, default, SymbolicRegexInfo.Create(startsWithBoundaryAnchor: true, canBeNullable: true));
         }
 
         #endregion
 
         internal static SymbolicRegexNode<S> CreateSingleton(SymbolicRegexBuilder<S> builder, S set) =>
-            Create(builder, SymbolicRegexNodeKind.Singleton, null, null, -1, -1, set, null, SymbolicRegexInfo.Create(containsSomeCharacter: !set.Equals(builder._solver.False)));
+            Create(builder, SymbolicRegexNodeKind.Singleton, null, null, -1, -1, set, SymbolicRegexInfo.Create(containsSomeCharacter: !set.Equals(builder._solver.False)));
 
         internal static SymbolicRegexNode<S> CreateLoop(SymbolicRegexBuilder<S> builder, SymbolicRegexNode<S> body, int lower, int upper, bool isLazy)
         {
             Debug.Assert(lower >= 0 && lower <= upper);
-            return Create(builder, SymbolicRegexNodeKind.Loop, body, null, lower, upper, default, null, SymbolicRegexInfo.Loop(body._info, lower, isLazy));
-        }
-
-        internal static SymbolicRegexNode<S> Or(SymbolicRegexBuilder<S> builder, params SymbolicRegexNode<S>[] disjuncts) =>
-            CreateCollection(builder, SymbolicRegexNodeKind.Or, SymbolicRegexSet<S>.CreateMulti(builder, disjuncts, SymbolicRegexNodeKind.Or), SymbolicRegexInfo.Or(GetInfos(disjuncts)));
-
-        internal static SymbolicRegexNode<S> Or(SymbolicRegexBuilder<S> builder, SymbolicRegexSet<S> disjuncts)
-        {
-            Debug.Assert(disjuncts._kind == SymbolicRegexNodeKind.Or || disjuncts.IsEverything);
-            return CreateCollection(builder, SymbolicRegexNodeKind.Or, disjuncts, SymbolicRegexInfo.Or(GetInfos(disjuncts)));
-        }
-
-        internal static SymbolicRegexNode<S> And(SymbolicRegexBuilder<S> builder, params SymbolicRegexNode<S>[] conjuncts) =>
-            CreateCollection(builder, SymbolicRegexNodeKind.And, SymbolicRegexSet<S>.CreateMulti(builder, conjuncts, SymbolicRegexNodeKind.And), SymbolicRegexInfo.And(GetInfos(conjuncts)));
-
-        internal static SymbolicRegexNode<S> And(SymbolicRegexBuilder<S> builder, SymbolicRegexSet<S> conjuncts)
-        {
-            Debug.Assert(conjuncts.IsNothing || conjuncts._kind == SymbolicRegexNodeKind.And);
-            return CreateCollection(builder, SymbolicRegexNodeKind.And, conjuncts, SymbolicRegexInfo.And(GetInfos(conjuncts)));
+            return Create(builder, SymbolicRegexNodeKind.Loop, body, null, lower, upper, default, SymbolicRegexInfo.Loop(body._info, lower, isLazy));
         }
 
         internal static SymbolicRegexNode<S> CreateCaptureStart(SymbolicRegexBuilder<S> builder, int captureNum) =>
-            Create(builder, SymbolicRegexNodeKind.CaptureStart, null, null, captureNum, -1, default, null, SymbolicRegexInfo.Create(isAlwaysNullable: true));
+            Create(builder, SymbolicRegexNodeKind.CaptureStart, null, null, captureNum, -1, default, SymbolicRegexInfo.Create(isAlwaysNullable: true));
 
         internal static SymbolicRegexNode<S> CreateCaptureEnd(SymbolicRegexBuilder<S> builder, int captureNum) =>
-            Create(builder, SymbolicRegexNodeKind.CaptureEnd, null, null, captureNum, -1, default, null, SymbolicRegexInfo.Create(isAlwaysNullable: true));
-
-        private static SymbolicRegexNode<S> CreateCollection(SymbolicRegexBuilder<S> builder, SymbolicRegexNodeKind kind, SymbolicRegexSet<S> alts, SymbolicRegexInfo info) =>
-            alts.IsNothing ? builder._nothing :
-            alts.IsEverything ? builder._anyStar :
-            alts.IsSingleton ? alts.GetSingletonElement() :
-            Create(builder, kind, null, null, -1, -1, default, alts, info);
-
-        private static SymbolicRegexInfo[] GetInfos(SymbolicRegexNode<S>[] nodes)
-        {
-            var infos = new SymbolicRegexInfo[nodes.Length];
-            for (int i = 0; i < nodes.Length; i++)
-            {
-                infos[i] = nodes[i]._info;
-            }
-            return infos;
-        }
-
-        private static SymbolicRegexInfo[] GetInfos(SymbolicRegexSet<S> nodes)
-        {
-            var infos = new SymbolicRegexInfo[nodes.Count];
-            int i = 0;
-            foreach (SymbolicRegexNode<S> node in nodes)
-            {
-                Debug.Assert(i < nodes.Count);
-                infos[i++] = node._info;
-            }
-            Debug.Assert(i == nodes.Count);
-            return infos;
-        }
+            Create(builder, SymbolicRegexNodeKind.CaptureEnd, null, null, captureNum, -1, default, SymbolicRegexInfo.Create(isAlwaysNullable: true));
 
         /// <summary>Make a concatenation of the supplied regex nodes.</summary>
         internal static SymbolicRegexNode<S> CreateConcat(SymbolicRegexBuilder<S> builder, SymbolicRegexNode<S> left, SymbolicRegexNode<S> right)
@@ -483,15 +397,15 @@ namespace System.Text.RegularExpressions.Symbolic
             // If the left isn't a concatenation, then proceed to concatenation the left with the right.
             if (left._kind != SymbolicRegexNodeKind.Concat)
             {
-                return Create(builder, SymbolicRegexNodeKind.Concat, left, right, -1, -1, default, null, SymbolicRegexInfo.Concat(left._info, right._info));
+                return Create(builder, SymbolicRegexNodeKind.Concat, left, right, -1, -1, default, SymbolicRegexInfo.Concat(left._info, right._info));
             }
 
             // The left is a concatenation.  We want to flatten it out and maintain a right-associative form.
             SymbolicRegexNode<S> concat = right;
-            List<SymbolicRegexNode<S>> leftNodes = left.ToList();
+            List<SymbolicRegexNode<S>> leftNodes = left.ToList(SymbolicRegexNodeKind.Concat);
             for (int i = leftNodes.Count - 1; i >= 0; i--)
             {
-                concat = Create(builder, SymbolicRegexNodeKind.Concat, leftNodes[i], concat, -1, -1, default, null, SymbolicRegexInfo.Concat(leftNodes[i]._info, concat._info));
+                concat = Create(builder, SymbolicRegexNodeKind.Concat, leftNodes[i], concat, -1, -1, default, SymbolicRegexInfo.Concat(leftNodes[i]._info, concat._info));
             }
             return concat;
         }
@@ -544,13 +458,13 @@ namespace System.Text.RegularExpressions.Symbolic
                     }
                 }
                 // No need for flattening and counter optimization did not apply, just build the or
-                return Create(builder, SymbolicRegexNodeKind.OrderedOr, left, right, -1, -1, default, null, SymbolicRegexInfo.Or(left._info, right._info));
+                return Create(builder, SymbolicRegexNodeKind.OrderedOr, left, right, -1, -1, default, SymbolicRegexInfo.Or(left._info, right._info));
             }
 
             // If the left side was an or, then it has to be flattened, gather the elements from both sides
-            List<SymbolicRegexNode<S>> elems = left.ToList(listKind: SymbolicRegexNodeKind.OrderedOr);
+            List<SymbolicRegexNode<S>> elems = left.ToList(SymbolicRegexNodeKind.OrderedOr);
             int firstRightElem = elems.Count;
-            right.ToList(elems, listKind: SymbolicRegexNodeKind.OrderedOr);
+            right.ToList(SymbolicRegexNodeKind.OrderedOr, elems);
 
             // Eliminate any duplicate elements, keeping the leftmost element
             HashSet<SymbolicRegexNode<S>> seenElems = new();
@@ -613,96 +527,6 @@ namespace System.Text.RegularExpressions.Symbolic
                 return _left.FirstCounterInfo();
             }
             return (_builder._nothing, _builder._nothing);
-        }
-
-        internal static SymbolicRegexNode<S> Not(SymbolicRegexBuilder<S> builder, SymbolicRegexNode<S> root)
-        {
-            // Instead of just creating a negated root node
-            // Convert ~root to Negation Normal Form (NNF) by using deMorgan's laws and push ~ to the leaves
-            // This may avoid rather large overhead (such case was discovered with unit test PasswordSearchDual)
-            // Do this transformation in-line without recursion, to avoid any chance of deep recursion
-            // OBSERVE: NNF[node] represents the Negation Normal Form of ~node
-            Dictionary<SymbolicRegexNode<S>, SymbolicRegexNode<S>> NNF = new();
-            Stack<(SymbolicRegexNode<S>, bool)> todo = new();
-            todo.Push((root, false));
-            while (todo.Count > 0)
-            {
-                (SymbolicRegexNode<S>, bool) top = todo.Pop();
-                bool secondTimePushed = top.Item2;
-                SymbolicRegexNode<S> node = top.Item1;
-                if (secondTimePushed)
-                {
-                    Debug.Assert((node._kind == SymbolicRegexNodeKind.Or || node._kind == SymbolicRegexNodeKind.And) && node._alts is not null);
-                    // Here all members of _alts have been processed
-                    List<SymbolicRegexNode<S>> alts_nnf = new();
-                    foreach (SymbolicRegexNode<S> elem in node._alts)
-                    {
-                        alts_nnf.Add(NNF[elem]);
-                    }
-                    // Using deMorgan's laws, flip the kind: Or becomes And, And becomes Or
-                    SymbolicRegexNode<S> node_nnf = node._kind == SymbolicRegexNodeKind.Or ? And(builder, alts_nnf.ToArray()) : Or(builder, alts_nnf.ToArray());
-                    NNF[node] = node_nnf;
-                }
-                else
-                {
-                    switch (node._kind)
-                    {
-                        case SymbolicRegexNodeKind.Not:
-                            Debug.Assert(node._left is not null);
-                            // Here we assume that top._left is already in NNF, double negation is cancelled out
-                            NNF[node] = node._left;
-                            break;
-
-                        case SymbolicRegexNodeKind.Or or SymbolicRegexNodeKind.And:
-                            Debug.Assert(node._alts is not null);
-                            // Push the node for the second time
-                            todo.Push((node, true));
-                            // Compute the negation normal form of all the members
-                            // Their computation is actually the same independent from being inside an 'Or' or 'And' node
-                            foreach (SymbolicRegexNode<S> elem in node._alts)
-                            {
-                                todo.Push((elem, false));
-                            }
-                            break;
-
-                        case SymbolicRegexNodeKind.Epsilon:
-                            //  ~() = .+
-                            NNF[node] = SymbolicRegexNode<S>.CreateLoop(builder, builder._anyChar, 1, int.MaxValue, isLazy: false);
-                            break;
-
-                        case SymbolicRegexNodeKind.Singleton:
-                            Debug.Assert(node._set is not null);
-                            // ~[] = .*
-                            if (node.IsNothing)
-                            {
-                                NNF[node] = builder._anyStar;
-                                break;
-                            }
-                            goto default;
-
-                        case SymbolicRegexNodeKind.Loop:
-                            Debug.Assert(node._left is not null);
-                            // ~(.*) = [] and ~(.+) = ()
-                            if (node.IsAnyStar)
-                            {
-                                NNF[node] = builder._nothing;
-                                break;
-                            }
-                            else if (node.IsPlus && node._left.IsAnyChar)
-                            {
-                                NNF[node] = builder.Epsilon;
-                                break;
-                            }
-                            goto default;
-
-                        default:
-                            // In all other cases construct the complement
-                            NNF[node] = Create(builder, SymbolicRegexNodeKind.Not, node, null, -1, -1, default, null, SymbolicRegexInfo.Not(node._info));
-                            break;
-                    }
-                }
-            }
-            return NNF[root];
         }
 
         /// <summary>
@@ -771,10 +595,6 @@ namespace System.Text.RegularExpressions.Symbolic
                         }
                         break;
                     }
-
-                case SymbolicRegexNodeKind.Or:
-                    Debug.Assert(_alts is not null);
-                    return _alts.GetFixedLength();
 
                 case SymbolicRegexNodeKind.OrderedOr:
                     {
@@ -873,32 +693,9 @@ namespace System.Text.RegularExpressions.Symbolic
                     }
                     break;
 
-                case SymbolicRegexNodeKind.Or:
-                    Debug.Assert(_alts is not null);
-                    _transitionRegex = TransitionRegex<S>.Leaf(_builder._nothing);
-                    foreach (SymbolicRegexNode<S> elem in _alts)
-                    {
-                        _transitionRegex = TransitionRegex<S>.Union(_transitionRegex, elem.CreateDerivative());
-                    }
-                    break;
-
                 case SymbolicRegexNodeKind.OrderedOr:
                     Debug.Assert(_left is not null && _right is not null);
                     _transitionRegex = TransitionRegex<S>.Union(_left.CreateDerivative(), _right.CreateDerivative());
-                    break;
-
-                case SymbolicRegexNodeKind.And:
-                    Debug.Assert(_alts is not null);
-                    _transitionRegex = TransitionRegex<S>.Leaf(_builder._anyStar);
-                    foreach (SymbolicRegexNode<S> elem in _alts)
-                    {
-                        _transitionRegex = TransitionRegex<S>.Intersect(_transitionRegex, elem.CreateDerivative());
-                    }
-                    break;
-
-                case SymbolicRegexNodeKind.Not:
-                    Debug.Assert(_left is not null);
-                    _transitionRegex = _left.CreateDerivative().Complement();
                     break;
 
                 default:
@@ -1161,20 +958,6 @@ namespace System.Text.RegularExpressions.Symbolic
                     if (!leftSimulateBacktracking)
                         return _right.AddTransitions(elem, context, transitions, continuation, effects, simulateBacktracking);
                     break;
-
-                case SymbolicRegexNodeKind.Or:
-                    Debug.Assert(_alts is not null);
-                    foreach (SymbolicRegexNode<S> alt in _alts)
-                    {
-                        if (alt.AddTransitions(elem, context, transitions, continuation, effects, simulateBacktracking))
-                            return true;
-                    }
-                    break;
-
-                case SymbolicRegexNodeKind.And:
-                case SymbolicRegexNodeKind.Not:
-                    Debug.Fail($"{nameof(AddTransitions)}:{_kind}");
-                    break;
             }
             return false;
         }
@@ -1238,24 +1021,6 @@ namespace System.Text.RegularExpressions.Symbolic
                 case SymbolicRegexNodeKind.CaptureEnd:
                     apply(new DerivativeEffect(DerivativeEffectKind.CaptureEnd, _lower), arg);
                     break;
-
-                case SymbolicRegexNodeKind.Or:
-                    Debug.Assert(_alts is not null);
-                    foreach (SymbolicRegexNode<S> elem in _alts)
-                    {
-                        if (elem.IsNullableFor(context))
-                            elem.ApplyEffects(apply, context, arg);
-                    }
-                    break;
-
-                case SymbolicRegexNodeKind.And:
-                    Debug.Assert(_alts is not null);
-                    foreach (SymbolicRegexNode<S> elem in _alts)
-                    {
-                        Debug.Assert(elem.IsNullableFor(context));
-                        elem.ApplyEffects(apply, context, arg);
-                    }
-                    break;
             }
         }
 
@@ -1301,116 +1066,19 @@ namespace System.Text.RegularExpressions.Symbolic
                     return this;
                 case SymbolicRegexNodeKind.Concat:
                     Debug.Assert(_left is not null && _right is not null);
-                    return _builder.And(_left.ExtractNullabilityTest(), _right.ExtractNullabilityTest());
-                case SymbolicRegexNodeKind.Or:
-                    Debug.Assert(_alts is not null);
-                    SymbolicRegexNode<S> disjunction = _builder._nothing;
-                    foreach (SymbolicRegexNode<S> elem in _alts)
-                    {
-                        disjunction = _builder.Or(disjunction, elem.ExtractNullabilityTest());
-                    }
-                    return disjunction;
+                    return _builder.CreateConcat(_left.ExtractNullabilityTest(), _right.ExtractNullabilityTest());
                 case SymbolicRegexNodeKind.OrderedOr:
                     Debug.Assert(_left is not null && _right is not null);
                     return _builder.OrderedOr(_left.ExtractNullabilityTest(), _right.ExtractNullabilityTest());
-                case SymbolicRegexNodeKind.And:
-                    Debug.Assert(_alts is not null);
-                    SymbolicRegexNode<S> conjunction = _builder._anyStar;
-                    foreach (SymbolicRegexNode<S> elem in _alts)
-                    {
-                        conjunction = _builder.And(conjunction, elem.ExtractNullabilityTest());
-                    }
-                    return conjunction;
                 case SymbolicRegexNodeKind.Loop:
                     Debug.Assert(_left is not null);
                     return _left.ExtractNullabilityTest();
                 default:
                     // All remaining cases could not be nullable or were trivially nullable
                     // Singleton cannot be nullable and Epsilon and FixedLengthMarker are trivially nullable
-                    Debug.Assert(_kind == SymbolicRegexNodeKind.Not && _left is not null);
-                    return _builder.Not(_left.ExtractNullabilityTest());
+                    Debug.Fail($"{nameof(ExtractNullabilityTest)}:{_kind}");
+                    return null;
             }
-        }
-
-        public override int GetHashCode()
-        {
-            return _hashcode;
-        }
-
-        private int ComputeHashCode()
-        {
-            switch (_kind)
-            {
-                case SymbolicRegexNodeKind.EndAnchor:
-                case SymbolicRegexNodeKind.BeginningAnchor:
-                case SymbolicRegexNodeKind.BOLAnchor:
-                case SymbolicRegexNodeKind.EOLAnchor:
-                case SymbolicRegexNodeKind.Epsilon:
-                case SymbolicRegexNodeKind.BoundaryAnchor:
-                case SymbolicRegexNodeKind.NonBoundaryAnchor:
-                case SymbolicRegexNodeKind.EndAnchorZ:
-                case SymbolicRegexNodeKind.EndAnchorZReverse:
-                    return HashCode.Combine(_kind, _info);
-
-                case SymbolicRegexNodeKind.FixedLengthMarker:
-                case SymbolicRegexNodeKind.CaptureStart:
-                case SymbolicRegexNodeKind.CaptureEnd:
-                    return HashCode.Combine(_kind, _lower);
-
-                case SymbolicRegexNodeKind.Loop:
-                    return HashCode.Combine(_kind, _left, _lower, _upper, _info);
-
-                case SymbolicRegexNodeKind.Or or SymbolicRegexNodeKind.And:
-                    return HashCode.Combine(_kind, _alts, _info);
-
-                case SymbolicRegexNodeKind.Concat:
-                case SymbolicRegexNodeKind.OrderedOr:
-                    return HashCode.Combine(_left, _right, _info);
-
-                case SymbolicRegexNodeKind.Singleton:
-                    return HashCode.Combine(_kind, _set);
-
-                default:
-                    Debug.Assert(_kind == SymbolicRegexNodeKind.Not);
-                    return HashCode.Combine(_kind, _left, _info);
-            };
-        }
-
-        public override bool Equals([NotNullWhen(true)] object? obj)
-        {
-            if (obj is not SymbolicRegexNode<S> that)
-            {
-                return false;
-            }
-
-            if (this == that)
-            {
-                return true;
-            }
-
-            if (_kind != that._kind)
-            {
-                return false;
-            }
-
-            if (_kind == SymbolicRegexNodeKind.Or)
-            {
-                if (_isInternalizedUnion && that._isInternalizedUnion)
-                {
-                    // Internalized nodes that are not identical are not equal
-                    return false;
-                }
-
-                // Check equality of the sets of regexes
-                Debug.Assert(_alts is not null && that._alts is not null);
-                if (!StackHelper.TryEnsureSufficientExecutionStack())
-                {
-                    return StackHelper.CallOnEmptyStack(_alts.Equals, that._alts);
-                }
-                return _alts.Equals(that._alts);
-            }
-
-            return false;
         }
 
         private void ToStringForLoop(StringBuilder sb)
@@ -1479,12 +1147,6 @@ namespace System.Text.RegularExpressions.Symbolic
 
                 case SymbolicRegexNodeKind.EndAnchorZReverse:
                     sb.Append("\\a");
-                    return;
-
-                case SymbolicRegexNodeKind.Or:
-                case SymbolicRegexNodeKind.And:
-                    Debug.Assert(_alts is not null);
-                    _alts.ToString(sb);
                     return;
 
                 case SymbolicRegexNodeKind.OrderedOr:
@@ -1567,12 +1229,7 @@ namespace System.Text.RegularExpressions.Symbolic
                     return;
 
                 default:
-                    // Using the operator ~ for complement
-                    Debug.Assert(_kind == SymbolicRegexNodeKind.Not);
-                    Debug.Assert(_left is not null);
-                    sb.Append("~(");
-                    _left.ToString(sb);
-                    sb.Append(')');
+                    Debug.Fail($"{nameof(ToString)}:{_kind}");
                     return;
             }
         }
@@ -1626,15 +1283,6 @@ namespace System.Text.RegularExpressions.Symbolic
                     _left.CollectPredicates_helper(predicates);
                     return;
 
-                case SymbolicRegexNodeKind.Or:
-                case SymbolicRegexNodeKind.And:
-                    Debug.Assert(_alts is not null);
-                    foreach (SymbolicRegexNode<S> sr in _alts)
-                    {
-                        sr.CollectPredicates_helper(predicates);
-                    }
-                    return;
-
                 case SymbolicRegexNodeKind.OrderedOr:
                     Debug.Assert(_left is not null && _right is not null);
                     _left.CollectPredicates_helper(predicates);
@@ -1651,11 +1299,6 @@ namespace System.Text.RegularExpressions.Symbolic
                         conc = conc._right;
                     }
                     conc.CollectPredicates_helper(predicates);
-                    return;
-
-                case SymbolicRegexNodeKind.Not:
-                    Debug.Assert(_left is not null);
-                    _left.CollectPredicates_helper(predicates);
                     return;
 
                 case SymbolicRegexNodeKind.NonBoundaryAnchor:
@@ -1716,21 +1359,9 @@ namespace System.Text.RegularExpressions.Symbolic
                         return rev;
                     }
 
-                case SymbolicRegexNodeKind.Or:
-                    Debug.Assert(_alts is not null);
-                    return _builder.Or(_alts.Reverse());
-
                 case SymbolicRegexNodeKind.OrderedOr:
                     Debug.Assert(_left is not null && _right is not null);
                     return _builder.OrderedOr(_left.Reverse(), _right.Reverse());
-
-                case SymbolicRegexNodeKind.And:
-                    Debug.Assert(_alts is not null);
-                    return _builder.And(_alts.Reverse());
-
-                case SymbolicRegexNodeKind.Not:
-                    Debug.Assert(_left is not null);
-                    return _builder.Not(_left.Reverse());
 
                 case SymbolicRegexNodeKind.FixedLengthMarker:
                     // Fixed length markers are omitted in reverse
@@ -1775,83 +1406,6 @@ namespace System.Text.RegularExpressions.Symbolic
             }
         }
 
-        /// <summary>
-        /// Transform OrderdOr to Or nodes and any lazy loops to eager ones.
-        /// </summary>
-        /// <remarks>
-        /// This transformation allows the second reverse pass to use the same derivative function as the third pass,
-        /// which must respect the backtracking engines alternation and lazyness semantics.
-        /// </remarks>
-        public SymbolicRegexNode<S> IgnoreOrOrderAndLazyness()
-        {
-            // Guard against stack overflow due to deep recursion
-            if (!StackHelper.TryEnsureSufficientExecutionStack())
-            {
-                return StackHelper.CallOnEmptyStack(IgnoreOrOrderAndLazyness);
-            }
-
-            switch (_kind)
-            {
-                case SymbolicRegexNodeKind.Loop:
-                    {
-                        Debug.Assert(_left is not null);
-                        SymbolicRegexNode<S> body = _left.IgnoreOrOrderAndLazyness();
-                        return body == _left && !IsLazy ?
-                            this :
-                            CreateLoop(_builder, body, _lower, _upper, isLazy: false);
-                    }
-
-                case SymbolicRegexNodeKind.Concat:
-                    {
-                        Debug.Assert(_left is not null && _right is not null);
-                        SymbolicRegexNode<S> left1 = _left.IgnoreOrOrderAndLazyness();
-                        SymbolicRegexNode<S> right1 = _right.IgnoreOrOrderAndLazyness();
-
-                        Debug.Assert(left1 is not null && right1 is not null);
-                        return left1 == _left && right1 == _right ?
-                            this :
-                            CreateConcat(_builder, left1, right1);
-                    }
-
-                case SymbolicRegexNodeKind.Or:
-                case SymbolicRegexNodeKind.And:
-                    {
-                        Debug.Assert(_alts != null);
-                        var elements = new SymbolicRegexNode<S>[_alts.Count];
-                        int i = 0;
-                        bool someChanged = false;
-                        foreach (SymbolicRegexNode<S> alt in _alts)
-                        {
-                            elements[i] = alt.IgnoreOrOrderAndLazyness();
-                            someChanged |= alt != elements[i];
-                            i += 1;
-                        }
-                        Debug.Assert(i == elements.Length);
-                        return !someChanged ? this :
-                            _kind == SymbolicRegexNodeKind.Or ? Or(_builder, elements) :
-                            And(_builder, elements);
-                    }
-
-                case SymbolicRegexNodeKind.Not:
-                    {
-                        Debug.Assert(_left is not null);
-                        SymbolicRegexNode<S> body = _left.IgnoreOrOrderAndLazyness();
-                        return body == _left ?
-                            this :
-                            Not(_builder, body);
-                    }
-
-                case SymbolicRegexNodeKind.OrderedOr:
-                    {
-                        Debug.Assert(_left is not null && _right is not null);
-                        return Or(_builder, _left.IgnoreOrOrderAndLazyness(), _right.IgnoreOrOrderAndLazyness());
-                    }
-
-                default:
-                    return this;
-            }
-        }
-
         internal bool StartsWithLoop(int upperBoundLowestValue = 1)
         {
             if (!StackHelper.TryEnsureSufficientExecutionStack())
@@ -1867,10 +1421,6 @@ namespace System.Text.RegularExpressions.Symbolic
                 case SymbolicRegexNodeKind.Concat:
                     Debug.Assert(_left is not null && _right is not null);
                     return _left.StartsWithLoop(upperBoundLowestValue) || (_left.IsNullable && _right.StartsWithLoop(upperBoundLowestValue));
-
-                case SymbolicRegexNodeKind.Or:
-                    Debug.Assert(_alts is not null);
-                    return _alts.StartsWithLoop(upperBoundLowestValue);
 
                 case SymbolicRegexNodeKind.OrderedOr:
                     Debug.Assert(_left is not null && _right is not null);
@@ -1920,37 +1470,15 @@ namespace System.Text.RegularExpressions.Symbolic
                         return startSet;
                     }
 
-                case SymbolicRegexNodeKind.Or:
-                    {
-                        Debug.Assert(_alts is not null);
-                        S startSet = _builder._solver.False;
-                        foreach (SymbolicRegexNode<S> alt in _alts)
-                        {
-                            startSet = _builder._solver.Or(startSet, alt._startSet);
-                        }
-                        return startSet;
-                    }
-
                 case SymbolicRegexNodeKind.OrderedOr:
                     {
                         Debug.Assert(_left is not null && _right is not null);
                         return _builder._solver.Or(_left._startSet, _right._startSet);
                     }
 
-                case SymbolicRegexNodeKind.And:
-                    {
-                        Debug.Assert(_alts is not null);
-                        S startSet = _builder._solver.True;
-                        foreach (SymbolicRegexNode<S> alt in _alts)
-                        {
-                            startSet = _builder._solver.And(startSet, alt._startSet);
-                        }
-                        return startSet;
-                    }
-
                 default:
-                    Debug.Assert(_kind == SymbolicRegexNodeKind.Not);
-                    return _builder._solver.True;
+                    Debug.Fail($"{nameof(ComputeStartSet)}:{_kind}");
+                    return default;
             }
         }
 
@@ -2019,19 +1547,6 @@ namespace System.Text.RegularExpressions.Symbolic
                         return left1 == _left && right1 == _right ?
                             this :
                             CreateConcat(_builder, left1, right1);
-                    }
-
-                case SymbolicRegexNodeKind.Or:
-                    {
-                        Debug.Assert(_alts != null);
-                        var elements = new SymbolicRegexNode<S>[_alts.Count];
-                        int i = 0;
-                        foreach (SymbolicRegexNode<S> alt in _alts)
-                        {
-                            elements[i++] = alt.PruneAnchors(prevKind, contWithWL, contWithNWL);
-                        }
-                        Debug.Assert(i == elements.Length);
-                        return Or(_builder, elements);
                     }
 
                 case SymbolicRegexNodeKind.OrderedOr:

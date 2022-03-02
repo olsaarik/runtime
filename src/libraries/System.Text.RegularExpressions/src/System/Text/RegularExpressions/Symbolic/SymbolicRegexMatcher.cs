@@ -188,8 +188,7 @@ namespace System.Text.RegularExpressions.Symbolic
 
             // Create the dot-star pattern (a concatenation of any* with the original pattern)
             // and all of its initial states.
-            SymbolicRegexNode<TSetType> unorderedPattern = _pattern.IgnoreOrOrderAndLazyness();
-            _dotStarredPattern = _builder.CreateConcat(_builder._anyStar, unorderedPattern);
+            _dotStarredPattern = _builder.CreateConcat(_builder._anyStar, _pattern);
             var dotstarredInitialStates = new DfaMatchingState<TSetType>[statesCount];
             for (uint i = 0; i < dotstarredInitialStates.Length; i++)
             {
@@ -205,7 +204,7 @@ namespace System.Text.RegularExpressions.Symbolic
 
             // Create the reverse pattern (the original pattern in reverse order) and all of its
             // initial states.
-            _reversePattern = unorderedPattern.Reverse();
+            _reversePattern = _pattern.Reverse();
             var reverseInitialStates = new DfaMatchingState<TSetType>[statesCount];
             for (uint i = 0; i < reverseInitialStates.Length; i++)
             {
@@ -1059,16 +1058,15 @@ namespace System.Text.RegularExpressions.Symbolic
 
                 // If the DFA state is a union of multiple DFA states, loop through all of them
                 // adding an NFA state for each.
-                if (dfaMatchingState.Node.Kind is SymbolicRegexNodeKind.Or)
+                if (dfaMatchingState.Node.Kind is SymbolicRegexNodeKind.OrderedOr)
                 {
-                    Debug.Assert(dfaMatchingState.Node._alts is not null);
-                    foreach (SymbolicRegexNode<TSetType> node in dfaMatchingState.Node._alts)
+                    dfaMatchingState.Node.ForListElements(static (node, s) =>
                     {
                         // Create (possibly new) NFA states for all the members.
                         // Add their IDs to the current set of NFA states and into the list.
-                        int nfaState = Builder.CreateNfaState(node, dfaMatchingState.PrevCharKind);
-                        NfaStateSet.Add(nfaState, out _);
-                    }
+                        int nfaState = s.Builder.CreateNfaState(node, s.State.PrevCharKind);
+                        s.Set.Add(nfaState, out _);
+                    }, (Builder: Builder, State: dfaMatchingState, Set: NfaStateSet), SymbolicRegexNodeKind.OrderedOr);
                 }
                 else
                 {

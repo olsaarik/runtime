@@ -38,10 +38,15 @@ namespace System.Text.RegularExpressions.Symbolic
                     return Node._lower;
                 }
 
-                if (Node._kind == SymbolicRegexNodeKind.Or)
+                if (Node._kind == SymbolicRegexNodeKind.OrderedOr)
                 {
-                    Debug.Assert(Node._alts is not null);
-                    return Node._alts._maximumLength;
+                    int fixedLength = -1;
+                    Node.ForListElements(static (SymbolicRegexNode<T> node, ref int s) =>
+                    {
+                        if (node._kind == SymbolicRegexNodeKind.FixedLengthMarker && node._lower > s)
+                            s = node._lower;
+                    }, ref fixedLength, SymbolicRegexNodeKind.OrderedOr);
+                    return fixedLength;
                 }
 
                 return -1;
