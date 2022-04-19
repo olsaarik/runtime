@@ -16,17 +16,16 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <summary>Write the DFA or NFA in DGML format into the TextWriter.</summary>
         /// <param name="matcher">The <see cref="SymbolicRegexMatcher"/> for the regular expression.</param>
         /// <param name="writer">Writer to which the DGML is written.</param>
-        /// <param name="nfa">True to create an NFA instead of a DFA.</param>
         /// <param name="addDotStar">True to prepend .*? onto the pattern (outside of the implicit root capture).</param>
         /// <param name="reverse">If true, then unwind the regex backwards (and <paramref name="addDotStar"/> is ignored).</param>
         /// <param name="maxStates">The approximate maximum number of states to include; less than or equal to 0 for no maximum.</param>
         /// <param name="maxLabelLength">maximum length of labels in nodes anything over that length is indicated with .. </param>
         public static void Write(
             TextWriter writer, SymbolicRegexMatcher<TSet> matcher,
-            bool nfa = false, bool addDotStar = true, bool reverse = false, int maxStates = -1, int maxLabelLength = -1)
+            bool addDotStar = true, bool reverse = false, int maxStates = -1, int maxLabelLength = -1)
         {
             var charSetSolver = new CharSetSolver();
-            var explorer = new DfaExplorer(matcher, nfa, addDotStar, reverse, maxStates);
+            var explorer = new DfaExplorer(matcher, addDotStar, reverse, maxStates);
             var nonEpsilonTransitions = new Dictionary<(int SourceState, int TargetState), List<(SymbolicRegexNode<TSet>?, TSet)>>();
             var epsilonTransitions = new List<Transition>();
 
@@ -184,10 +183,9 @@ namespace System.Text.RegularExpressions.Symbolic
             private readonly DfaMatchingState<TSet> _initialState;
             private readonly List<int> _states = new();
             private readonly List<Transition> _transitions = new();
-            private readonly SymbolicNFA<TSet>? _nfa;
             internal readonly SymbolicRegexBuilder<TSet> _builder;
 
-            internal DfaExplorer(SymbolicRegexMatcher<TSet> srm, bool nfa, bool addDotStar, bool reverse, int maxStates)
+            internal DfaExplorer(SymbolicRegexMatcher<TSet> srm, bool addDotStar, bool reverse, int maxStates)
             {
                 _builder = srm._builder;
                 uint startId = reverse ?
@@ -200,60 +198,45 @@ namespace System.Text.RegularExpressions.Symbolic
                     addDotStar ? srm._dotStarredPattern :
                     srm._pattern, startId);
 
-                if (nfa)
+                Dictionary<(int, int), TSet> normalizedMoves = new();
+                Stack<DfaMatchingState<TSet>> stack = new();
+                stack.Push(_initialState);
+                _states.Add(_initialState.Id);
+
+                HashSet<int> stateSet = new();
+                stateSet.Add(_initialState.Id);
+
+                TSet[]? minterms = _builder._solver.GetMinterms();
+                Debug.Assert(minterms is not null);
+
+                // Unwind until the stack is empty or the bound has been reached
+                while (stack.Count > 0 && (maxStates <= 0 || _states.Count < maxStates))
                 {
-                    _nfa = _initialState.Node.Explore(maxStates);
-                    for (int q = 0; q < _nfa.StateCount; q++)
+                    DfaMatchingState<TSet> q = stack.Pop();
+                    foreach (TSet c in minterms)
                     {
-                        _states.Add(q);
-                        foreach ((TSet, SymbolicRegexNode<TSet>?, int) branch in _nfa.EnumeratePaths(q))
+                        DfaMatchingState<TSet> p = q.Next(c);
+
+                        // check that p is not a dead-end
+                        if (!p.IsNothing)
                         {
-                            _transitions.Add(new Transition(q, branch.Item3, (branch.Item2, branch.Item1)));
+                            if (stateSet.Add(p.Id))
+                            {
+                                stack.Push(p);
+                                _states.Add(p.Id);
+                            }
+
+                            (int, int) qp = (q.Id, p.Id);
+                            normalizedMoves[qp] = normalizedMoves.ContainsKey(qp) ?
+                                _builder._solver.Or(normalizedMoves[qp], c) :
+                                c;
                         }
                     }
                 }
-                else
+
+                foreach (KeyValuePair<(int, int), TSet> entry in normalizedMoves)
                 {
-                    Dictionary<(int, int), TSet> normalizedMoves = new();
-                    Stack<DfaMatchingState<TSet>> stack = new();
-                    stack.Push(_initialState);
-                    _states.Add(_initialState.Id);
-
-                    HashSet<int> stateSet = new();
-                    stateSet.Add(_initialState.Id);
-
-                    TSet[]? minterms = _builder._solver.GetMinterms();
-                    Debug.Assert(minterms is not null);
-
-                    // Unwind until the stack is empty or the bound has been reached
-                    while (stack.Count > 0 && (maxStates <= 0 || _states.Count < maxStates))
-                    {
-                        DfaMatchingState<TSet> q = stack.Pop();
-                        foreach (TSet c in minterms)
-                        {
-                            DfaMatchingState<TSet> p = q.Next(c);
-
-                            // check that p is not a dead-end
-                            if (!p.IsNothing)
-                            {
-                                if (stateSet.Add(p.Id))
-                                {
-                                    stack.Push(p);
-                                    _states.Add(p.Id);
-                                }
-
-                                (int, int) qp = (q.Id, p.Id);
-                                normalizedMoves[qp] = normalizedMoves.ContainsKey(qp) ?
-                                    _builder._solver.Or(normalizedMoves[qp], c) :
-                                    c;
-                            }
-                        }
-                    }
-
-                    foreach (KeyValuePair<(int, int), TSet> entry in normalizedMoves)
-                    {
-                        _transitions.Add(new Transition(entry.Key.Item1, entry.Key.Item2, (null, entry.Value)));
-                    }
+                    _transitions.Add(new Transition(entry.Key.Item1, entry.Key.Item2, (null, entry.Value)));
                 }
             }
 
@@ -272,7 +255,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 }
             }
 
-            public int InitialState => _nfa is not null ? 0 : _initialState.Id;
+            public int InitialState => _initialState.Id;
 
             public int StateCount => _states.Count;
 
@@ -285,13 +268,6 @@ namespace System.Text.RegularExpressions.Symbolic
 
             public string DescribeState(int state)
             {
-                if (_nfa is not null)
-                {
-                    Debug.Assert(state < _nfa.StateCount);
-                    string? str = WebUtility.HtmlEncode(_nfa.GetNode(state).ToString());
-                    return _nfa.IsUnexplored(state) ? $"Unexplored:{str}" : str;
-                }
-
                 Debug.Assert(_builder._stateArray is not null);
                 return _builder._stateArray[state].DgmlView;
             }
@@ -300,12 +276,6 @@ namespace System.Text.RegularExpressions.Symbolic
 
             public bool IsFinalState(int state)
             {
-                if (_nfa is not null)
-                {
-                    Debug.Assert(state < _nfa.StateCount);
-                    return _nfa.CanBeNullable(state);
-                }
-
                 Debug.Assert(_builder._stateArray is not null && state < _builder._stateArray.Length);
                 return _builder._stateArray[state].Node.CanBeNullable;
             }

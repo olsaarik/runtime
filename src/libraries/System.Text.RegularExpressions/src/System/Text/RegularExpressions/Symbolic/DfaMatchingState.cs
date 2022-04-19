@@ -38,12 +38,6 @@ namespace System.Text.RegularExpressions.Symbolic
                     return Node._lower;
                 }
 
-                if (Node._kind == SymbolicRegexNodeKind.Or)
-                {
-                    Debug.Assert(Node._alts is not null);
-                    return Node._alts._maximumLength;
-                }
-
                 return -1;
             }
         }
@@ -111,6 +105,32 @@ namespace System.Text.RegularExpressions.Symbolic
             // use an existing state instead if one exists already
             // otherwise create a new new id for it
             return Node._builder.CreateState(derivative, nextCharKind, capturing: false);
+        }
+
+        /// <summary>
+        /// Compute a set of transitions for the given minterm.
+        /// </summary>
+        /// <param name="minterm">minterm corresponding to some input character or False corresponding to last \n</param>
+        /// <returns>a list of target states</returns>
+        internal List<DfaMatchingState<TSet>> NfaNext(TSet minterm)
+        {
+            uint nextCharKind = GetNextCharKind(ref minterm);
+
+            // Combined character context
+            uint context = CharKind.Context(PrevCharKind, nextCharKind);
+
+            // Compute the transitions for the given context
+            IEnumerable<SymbolicRegexNode<TSet>> nodes = Node.CreateNfaDerivative(minterm, context);
+
+            var list = new List<DfaMatchingState<TSet>>();
+            foreach (SymbolicRegexNode<TSet> node in nodes)
+            {
+                // nextCharKind will be the PrevCharKind of the target state
+                // use an existing state instead if one exists already
+                // otherwise create a new new id for it
+                list.Add(Node._builder.CreateState(node, nextCharKind, capturing: false));
+            }
+            return list;
         }
 
         /// <summary>

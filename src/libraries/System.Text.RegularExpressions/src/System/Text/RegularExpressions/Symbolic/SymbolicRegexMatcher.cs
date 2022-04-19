@@ -17,21 +17,19 @@ namespace System.Text.RegularExpressions.Symbolic
 #if DEBUG
         /// <summary>Unwind the regex of the matcher and save the resulting state graph in DGML</summary>
         /// <param name="writer">Writer to which the DGML is written.</param>
-        /// <param name="nfa">True to create an NFA instead of a DFA.</param>
         /// <param name="addDotStar">True to prepend .*? onto the pattern (outside of the implicit root capture).</param>
         /// <param name="reverse">If true, then unwind the regex backwards.</param>
         /// <param name="maxStates">The approximate maximum number of states to include; less than or equal to 0 for no maximum.</param>
         /// <param name="maxLabelLength">maximum length of labels in nodes anything over that length is indicated with .. </param>
-        public abstract void SaveDGML(TextWriter writer, bool nfa, bool addDotStar, bool reverse, int maxStates, int maxLabelLength);
+        public abstract void SaveDGML(TextWriter writer, bool addDotStar, bool reverse, int maxStates, int maxLabelLength);
 
         /// <summary>
         /// Generates up to k random strings matched by the regex
         /// </summary>
         /// <param name="k">upper bound on the number of generated strings</param>
         /// <param name="randomseed">random seed for the generator, 0 means no random seed</param>
-        /// <param name="negative">if true then generate inputs that do not match</param>
         /// <returns></returns>
-        public abstract IEnumerable<string> GenerateRandomMembers(int k, int randomseed, bool negative);
+        public abstract IEnumerable<string> GenerateRandomMembers(int k, int randomseed);
 #endif
     }
 
@@ -934,24 +932,18 @@ namespace System.Text.RegularExpressions.Symbolic
 
                 // If the DFA state is a union of multiple DFA states, loop through all of them
                 // adding an NFA state for each.
-                if (dfaMatchingState.Node.Kind is SymbolicRegexNodeKind.Or)
+                SymbolicRegexNode<TSet> node = dfaMatchingState.Node;
+                while (node.Kind is SymbolicRegexNodeKind.OrderedOr)
                 {
-                    Debug.Assert(dfaMatchingState.Node._alts is not null);
-                    foreach (SymbolicRegexNode<TSet> node in dfaMatchingState.Node._alts)
-                    {
-                        // Create (possibly new) NFA states for all the members.
-                        // Add their IDs to the current set of NFA states and into the list.
-                        int nfaState = Builder.CreateNfaState(node, dfaMatchingState.PrevCharKind);
-                        NfaStateSet.Add(nfaState, out _);
-                    }
+                    Debug.Assert(node._left is not null);
+                    // Create (possibly new) NFA states for all the members.
+                    // Add their IDs to the current set of NFA states and into the list.
+                    int elemNfaState = Builder.CreateNfaState(node, dfaMatchingState.PrevCharKind);
+                    NfaStateSet.Add(elemNfaState, out _);
                 }
-                else
-                {
-                    // Otherwise, just add an NFA state for the singular DFA state.
-                    SymbolicRegexNode<TSet> node = dfaMatchingState.Node;
-                    int nfaState = Builder.CreateNfaState(node, dfaMatchingState.PrevCharKind);
-                    NfaStateSet.Add(nfaState, out _);
-                }
+                // Finally, just add an NFA state for the singular DFA state or last element of a union.
+                int nfaState = Builder.CreateNfaState(node, dfaMatchingState.PrevCharKind);
+                NfaStateSet.Add(nfaState, out _);
             }
         }
 
@@ -1139,11 +1131,11 @@ namespace System.Text.RegularExpressions.Symbolic
         }
 
 #if DEBUG
-        public override void SaveDGML(TextWriter writer, bool nfa, bool addDotStar, bool reverse, int maxStates, int maxLabelLength) =>
-            DgmlWriter<TSet>.Write(writer, this, nfa, addDotStar, reverse, maxStates, maxLabelLength);
+        public override void SaveDGML(TextWriter writer, bool addDotStar, bool reverse, int maxStates, int maxLabelLength) =>
+            DgmlWriter<TSet>.Write(writer, this, addDotStar, reverse, maxStates, maxLabelLength);
 
-        public override IEnumerable<string> GenerateRandomMembers(int k, int randomseed, bool negative) =>
-            new SymbolicRegexSampler<TSet>(_pattern, randomseed, negative).GenerateRandomMembers(k);
+        public override IEnumerable<string> GenerateRandomMembers(int k, int randomseed) =>
+            new SymbolicRegexSampler<TSet>(_pattern, randomseed).GenerateRandomMembers(k);
 #endif
     }
 }

@@ -26,20 +26,19 @@ namespace System.Text.RegularExpressions
 
         /// <summary>Unwind the regex and save the resulting state graph in DGML</summary>
         /// <param name="writer">Writer to which the DGML is written.</param>
-        /// <param name="nfa">True to create an NFA instead of a DFA.</param>
         /// <param name="addDotStar">True to prepend .*? onto the pattern (outside of the implicit root capture).</param>
         /// <param name="reverse">If true, then unwind the regex backwards (and <paramref name="addDotStar"/> is ignored).</param>
         /// <param name="maxStates">The approximate maximum number of states to include; less than or equal to 0 for no maximum.</param>
         /// <param name="maxLabelLength">maximum length of labels in nodes anything over that length is indicated with .. </param>
         [ExcludeFromCodeCoverage(Justification = "Debug only")]
-        internal void SaveDGML(TextWriter writer, bool nfa, bool addDotStar, bool reverse, int maxStates, int maxLabelLength)
+        internal void SaveDGML(TextWriter writer, bool addDotStar, bool reverse, int maxStates, int maxLabelLength)
         {
             if (factory is not SymbolicRegexRunnerFactory srmFactory)
             {
                 throw new NotSupportedException();
             }
 
-            srmFactory._matcher.SaveDGML(writer, nfa, addDotStar, reverse, maxStates, maxLabelLength);
+            srmFactory._matcher.SaveDGML(writer, addDotStar, reverse, maxStates, maxLabelLength);
         }
 
         /// <summary>
@@ -57,17 +56,16 @@ namespace System.Text.RegularExpressions
         /// </summary>
         /// <param name="k">upper bound on the number of generated strings</param>
         /// <param name="randomseed">random seed for the generator, 0 means no random seed</param>
-        /// <param name="negative">if true then generate inputs that do not match</param>
         /// <returns></returns>
         [ExcludeFromCodeCoverage(Justification = "Debug only")]
-        internal IEnumerable<string> GenerateRandomMembers(int k, int randomseed, bool negative)
+        internal IEnumerable<string> GenerateRandomMembers(int k, int randomseed)
         {
             if (factory is not SymbolicRegexRunnerFactory srmFactory)
             {
                 throw new NotSupportedException();
             }
 
-            return srmFactory._matcher.GenerateRandomMembers(k, randomseed, negative);
+            return srmFactory._matcher.GenerateRandomMembers(k, randomseed);
         }
     }
 }

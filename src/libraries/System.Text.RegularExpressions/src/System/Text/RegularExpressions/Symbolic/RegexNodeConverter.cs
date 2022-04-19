@@ -170,29 +170,6 @@ namespace System.Text.RegularExpressions.Symbolic
                     EnsureWordLetterPredicateInitialized();
                     return _builder.NonBoundaryAnchor;
 
-                // Experimental / unsupported
-
-#if DEBUG
-                case RegexNodeKind.ExpressionConditional:
-                    // Try to extract the special case representing complement or intersection
-                    if (IsComplementedNode(node))
-                    {
-                        return _builder.Not(ConvertToSymbolicRegexNode(node.Child(0), tryCreateFixedLengthMarker: false));
-                    }
-
-                    if (TryGetIntersection(node, out List<RegexNode>? conjuncts))
-                    {
-                        var nested = new SymbolicRegexNode<BDD>[conjuncts.Count];
-                        for (int i = 0; i < nested.Length; i++)
-                        {
-                            nested[i] = ConvertToSymbolicRegexNode(conjuncts[i], tryCreateFixedLengthMarker: false);
-                        }
-                        return _builder.And(nested);
-                    }
-
-                    goto default;
-#endif
-
                 default:
                     throw new NotSupportedException(SR.Format(SR.NotSupported_NonBacktrackingConflictingExpression, node.Kind switch
                     {
@@ -245,38 +222,6 @@ namespace System.Text.RegularExpressions.Symbolic
 
                 return _builder.CreateSingleton(CreateBDDFromSetString((node.Options & RegexOptions.IgnoreCase) != 0, set));
             }
-
-#if DEBUG
-            // TODO-NONBACKTRACKING: recognizing strictly only [] (RegexNode.Nothing), for example [0-[0]] would not be recognized
-            bool IsNothing(RegexNode node) => node.Kind == RegexNodeKind.Nothing || (node.Kind == RegexNodeKind.Set && ConvertSet(node).IsNothing);
-
-            bool IsDotStar(RegexNode node) => node.Kind == RegexNodeKind.Setloop && ConvertToSymbolicRegexNode(node, tryCreateFixedLengthMarker: false).IsAnyStar;
-
-            bool IsIntersect(RegexNode node) => node.Kind == RegexNodeKind.ExpressionConditional && IsNothing(node.Child(2));
-
-            bool TryGetIntersection(RegexNode node, [Diagnostics.CodeAnalysis.NotNullWhen(true)] out List<RegexNode>? conjuncts)
-            {
-                if (!IsIntersect(node))
-                {
-                    conjuncts = null;
-                    return false;
-                }
-
-                conjuncts = new List<RegexNode>();
-                conjuncts.Add(node.Child(0));
-                node = node.Child(1);
-                while (IsIntersect(node))
-                {
-                    conjuncts.Add(node.Child(0));
-                    node = node.Child(1);
-                }
-
-                conjuncts.Add(node);
-                return true;
-            }
-
-            bool IsComplementedNode(RegexNode node) => IsNothing(node.Child(1)) && IsDotStar(node.Child(2));
-#endif
         }
 
         /// <summary>Creates a BDD from the <see cref="RegexCharClass"/> set string to determine whether a char is in the set.</summary>

@@ -19,9 +19,9 @@ namespace System.Text.RegularExpressions.Symbolic
         private ISolver<TSet> _solver;
         private CharSetSolver _charSetSolver;
 
-        public SymbolicRegexSampler(SymbolicRegexNode<TSet> root, int randomseed, bool negative)
+        public SymbolicRegexSampler(SymbolicRegexNode<TSet> root, int randomseed)
         {
-            _root = negative ? root._builder.Not(root) : root;
+            _root = root;
             // Treat 0 as no seed and instead choose a random seed randomly
             RandomSeed = randomseed == 0 ? new Random().Next() : randomseed;
             _random = new Random(RandomSeed);
