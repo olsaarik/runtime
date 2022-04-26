@@ -117,8 +117,8 @@ namespace System.Text.RegularExpressions.Symbolic
         /// Compute a set of transitions for the given minterm.
         /// </summary>
         /// <param name="minterm">minterm corresponding to some input character or False corresponding to last \n</param>
-        /// <returns>an enumeration of the transitions as pairs of the target state and a list of effects to be applied</returns>
-        internal List<(DfaMatchingState<TSet> State, DerivativeEffect[] Effects)> NfaNextWithEffects(TSet minterm)
+        /// <returns>a list of target states</returns>
+        internal List<DfaMatchingState<TSet>> NfaNext(TSet minterm)
         {
             uint nextCharKind = GetNextCharKind(ref minterm);
 
@@ -126,10 +126,36 @@ namespace System.Text.RegularExpressions.Symbolic
             uint context = CharKind.Context(PrevCharKind, nextCharKind);
 
             // Compute the transitions for the given context
-            List<(SymbolicRegexNode<TSet>, DerivativeEffect[])> nodesAndEffects = Node.CreateNfaDerivativeWithEffects(minterm, context);
+            IEnumerable<SymbolicRegexNode<TSet>> nodes = Node.CreateNfaDerivative(minterm, context);
 
-            var list = new List<(DfaMatchingState<TSet> State, DerivativeEffect[] Effects)>();
-            foreach ((SymbolicRegexNode<TSet> node, DerivativeEffect[]? effects) in nodesAndEffects)
+            var list = new List<DfaMatchingState<TSet>>();
+            foreach (SymbolicRegexNode<TSet> node in nodes)
+            {
+                // nextCharKind will be the PrevCharKind of the target state
+                // use an existing state instead if one exists already
+                // otherwise create a new new id for it
+                list.Add(Node._builder.CreateState(node, nextCharKind, capturing: false));
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// Compute a set of transitions for the given minterm.
+        /// </summary>
+        /// <param name="minterm">minterm corresponding to some input character or False corresponding to last \n</param>
+        /// <returns>an enumeration of the transitions as pairs of the target state and a list of effects to be applied</returns>
+        internal List<(DfaMatchingState<TSet> State, ArraySegment<DerivativeEffect> Effects)> NfaNextWithEffects(TSet minterm)
+        {
+            uint nextCharKind = GetNextCharKind(ref minterm);
+
+            // Combined character context
+            uint context = CharKind.Context(PrevCharKind, nextCharKind);
+
+            // Compute the transitions for the given context
+            List<(SymbolicRegexNode<TSet>, ArraySegment<DerivativeEffect>)> nodesAndEffects = Node.CreateNfaDerivativeWithEffects(minterm, context);
+
+            var list = new List<(DfaMatchingState<TSet> State, ArraySegment<DerivativeEffect> Effects)>();
+            foreach ((SymbolicRegexNode<TSet> node, ArraySegment<DerivativeEffect> effects) in nodesAndEffects)
             {
                 // nextCharKind will be the PrevCharKind of the target state
                 // use an existing state instead if one exists already

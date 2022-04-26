@@ -288,14 +288,14 @@ namespace System.Text.RegularExpressions.Symbolic
             return TStateHandler.TakeTransition(builder, ref state, mintermId);
         }
 
-        private List<(DfaMatchingState<TSet>, DerivativeEffect[])> CreateNewCapturingTransitions(DfaMatchingState<TSet> state, TSet minterm, int offset)
+        private List<(DfaMatchingState<TSet>, ArraySegment<DerivativeEffect>)> CreateNewCapturingTransitions(DfaMatchingState<TSet> state, TSet minterm, int offset)
         {
             Debug.Assert(_builder._capturingDelta is not null);
             lock (this)
             {
                 // Get the next state if it exists.  The caller should have already tried and found it null (not yet created),
                 // but in the interim another thread could have created it.
-                List<(DfaMatchingState<TSet>, DerivativeEffect[])>? p = _builder._capturingDelta[offset];
+                List<(DfaMatchingState<TSet>, ArraySegment<DerivativeEffect>)>? p = _builder._capturingDelta[offset];
                 if (p is null)
                 {
                     // Build the new state and store it into the array.
@@ -719,14 +719,14 @@ namespace System.Text.RegularExpressions.Symbolic
                     // Get or create the transitions
                     int offset = (sourceId << builder._mintermsLog) | mintermId;
                     Debug.Assert(builder._capturingDelta is not null);
-                    List<(DfaMatchingState<TSet>, DerivativeEffect[])>? transitions =
+                    List<(DfaMatchingState<TSet>, ArraySegment<DerivativeEffect>)>? transitions =
                         builder._capturingDelta[offset] ??
                         CreateNewCapturingTransitions(sourceState, minterm, offset);
 
                     // Take the transitions in their prioritized order
                     for (int j = 0; j < transitions.Count; ++j)
                     {
-                        (DfaMatchingState<TSet> targetState, DerivativeEffect[] effects) = transitions[j];
+                        (DfaMatchingState<TSet> targetState, ArraySegment<DerivativeEffect> effects) = transitions[j];
                         Debug.Assert(!targetState.IsDeadend, "Transitions should not include dead ends.");
 
                         // Try to add the state and handle the case where it didn't exist before. If the state already
@@ -826,7 +826,7 @@ namespace System.Text.RegularExpressions.Symbolic
             /// </summary>
             /// <param name="effects">list of effects to be applied</param>
             /// <param name="pos">the current input position to record</param>
-            public void ApplyEffects(DerivativeEffect[] effects, int pos)
+            public void ApplyEffects(ArraySegment<DerivativeEffect> effects, int pos)
             {
                 foreach (DerivativeEffect effect in effects)
                 {
@@ -936,24 +936,18 @@ namespace System.Text.RegularExpressions.Symbolic
 
                 // If the DFA state is a union of multiple DFA states, loop through all of them
                 // adding an NFA state for each.
-                if (dfaMatchingState.Node.Kind is SymbolicRegexNodeKind.Or)
+                SymbolicRegexNode<TSet> node = dfaMatchingState.Node.Kind == SymbolicRegexNodeKind.DisableBacktrackingSimulation ?
+                    dfaMatchingState.Node._left! : dfaMatchingState.Node;
+                while (node.Kind is SymbolicRegexNodeKind.OrderedOr)
                 {
-                    Debug.Assert(dfaMatchingState.Node._alts is not null);
-                    foreach (SymbolicRegexNode<TSet> node in dfaMatchingState.Node._alts)
-                    {
-                        // Create (possibly new) NFA states for all the members.
-                        // Add their IDs to the current set of NFA states and into the list.
-                        int nfaState = Builder.CreateNfaState(node, dfaMatchingState.PrevCharKind);
-                        NfaStateSet.Add(nfaState, out _);
-                    }
+                    Debug.Assert(node._left is not null && node._right is not null);
+                    // Create (possibly new) NFA states for all the members.
+                    // Add their IDs to the current set of NFA states and into the list.
+                    NfaStateSet.Add(Builder.CreateNfaState(node._left, dfaMatchingState.PrevCharKind), out _);
+                    node = node._right;
                 }
-                else
-                {
-                    // Otherwise, just add an NFA state for the singular DFA state.
-                    SymbolicRegexNode<TSet> node = dfaMatchingState.Node;
-                    int nfaState = Builder.CreateNfaState(node, dfaMatchingState.PrevCharKind);
-                    NfaStateSet.Add(nfaState, out _);
-                }
+                // Finally, just add an NFA state for the singular DFA state or last element of a union.
+                NfaStateSet.Add(Builder.CreateNfaState(node, dfaMatchingState.PrevCharKind), out _);
             }
         }
 

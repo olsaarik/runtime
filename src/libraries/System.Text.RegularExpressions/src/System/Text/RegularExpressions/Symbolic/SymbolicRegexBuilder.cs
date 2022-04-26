@@ -1,4 +1,4 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
@@ -106,7 +106,7 @@ namespace System.Text.RegularExpressions.Symbolic
         /// contributing non-trivial overhead (https://github.com/dotnet/runtime/issues/65789).
         /// </remarks>
         internal DfaMatchingState<TSet>?[]? _delta;
-        internal List<(DfaMatchingState<TSet>, DerivativeEffect[])>?[]? _capturingDelta;
+        internal List<(DfaMatchingState<TSet>, ArraySegment<DerivativeEffect>)>?[]? _capturingDelta;
         private const int InitialStateLimit = 1024;
 
         /// <summary>1 + Log2(_minterms.Length), the smallest k s.t. 2^k >= minterms.Length + 1</summary>
@@ -159,7 +159,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 // the extra +1 slot with id minterms.Length is reserved for \Z (last occurrence of \n)
                 _mintermsLog = BitOperations.Log2((uint)_minterms.Length) + 1;
                 _delta = new DfaMatchingState<TSet>[InitialStateLimit << _mintermsLog];
-                _capturingDelta = new List<(DfaMatchingState<TSet>, DerivativeEffect[])>[InitialStateLimit << _mintermsLog];
+                _capturingDelta = new List<(DfaMatchingState<TSet>, ArraySegment<DerivativeEffect>)>[InitialStateLimit << _mintermsLog];
             }
 
             // initialized to False but updated later to the actual condition ony if \b or \B occurs anywhere in the regex
@@ -691,18 +691,22 @@ namespace System.Text.RegularExpressions.Symbolic
                 if (targets is null)
                 {
                     // Create the underlying transition from the core state corresponding to the nfa state
+
+                    // Check if DFA mode had already produced a transition from this state
                     DfaMatchingState<TSet> coreState = GetCoreState(nfaStateId);
                     int coreOffset = (coreState.Id << _mintermsLog) | mintermId;
-                    DfaMatchingState<TSet>? coreTarget = _delta[coreOffset] ?? CreateNewTransition(coreState, mintermId, coreOffset);
+                    DfaMatchingState<TSet>? coreTarget = _delta[coreOffset];
+                    if (coreTarget is not null)
+                    {
+                        // Existing transition from DFA mode was found, now reinterpret it as an NFA transition
 
-                    // TBD: OrderedOr
-                    if (coreTarget.Node.Kind == SymbolicRegexNodeKind.Or)
+                        SymbolicRegexNode<TSet> node = coreTarget.Node.Kind == SymbolicRegexNodeKind.DisableBacktrackingSimulation ?
+                            coreTarget.Node._left! : coreTarget.Node;
+                        if (node.Kind == SymbolicRegexNodeKind.OrderedOr)
                     {
                         // Create separate NFA states for all members of a disjunction
                         // Here duplicate NFA states cannot arise because there are no duplicate nodes in the disjunction
-                        SymbolicRegexSet<TSet>? alts = coreTarget.Node._alts;
-                        Debug.Assert(alts is not null);
-
+                            List<SymbolicRegexNode<TSet>> alts = node.ToList(listKind: SymbolicRegexNodeKind.OrderedOr);
                         targets = new int[alts.Count];
                         int targetIndex = 0;
                         foreach (SymbolicRegexNode<TSet> q in alts)
@@ -727,6 +731,24 @@ namespace System.Text.RegularExpressions.Symbolic
                         }
 
                         targets = new[] { nfaTargetId };
+                        }
+                    }
+                    else
+                    {
+                        // No existing transition, create a new one
+                        List<DfaMatchingState<TSet>> targetStates = coreState.NfaNext(GetMinterm(mintermId));
+
+                        // Map the target states to their NFA state IDs
+                        targets = new int[targetStates.Count];
+                        int targetIndex = 0;
+                        foreach (DfaMatchingState<TSet> target in targetStates)
+                        {
+                            if (!_nfaStateArrayInverse.TryGetValue(target.Id, out int nfaTargetId))
+                            {
+                                nfaTargetId = MakeNewNfaState(target.Id);
+                            }
+                            targets[targetIndex++] = nfaTargetId;
+                        }
                     }
 
                     Volatile.Write(ref _nfaDelta[nfaOffset], targets);
