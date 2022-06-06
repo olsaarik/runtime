@@ -479,10 +479,12 @@ namespace System.Text.RegularExpressions.Symbolic
             return Create(builder, SymbolicRegexNodeKind.Effect, node, effectNode, -1, -1, default, SymbolicRegexInfo.Effect(node._info));
         }
 
-        internal static SymbolicRegexNode<TSet> CreateCaptureStart(SymbolicRegexBuilder<TSet> builder, int captureNum) =>
+        internal static SymbolicRegexNode<TSet> CreateCaptureStart(SymbolicRegexBuilder<TSet> builder, int captureNum) => captureNum == 0 ?
+            builder.Epsilon :
             Create(builder, SymbolicRegexNodeKind.CaptureStart, null, null, captureNum, -1, default, SymbolicRegexInfo.Create(isAlwaysNullable: true, isHighPriorityNullable: true));
 
-        internal static SymbolicRegexNode<TSet> CreateCaptureEnd(SymbolicRegexBuilder<TSet> builder, int captureNum) =>
+        internal static SymbolicRegexNode<TSet> CreateCaptureEnd(SymbolicRegexBuilder<TSet> builder, int captureNum) => captureNum == 0 ?
+            builder.Epsilon :
             Create(builder, SymbolicRegexNodeKind.CaptureEnd, null, null, captureNum, -1, default, SymbolicRegexInfo.Create(isAlwaysNullable: true, isHighPriorityNullable: true));
 
         internal static SymbolicRegexNode<TSet> CreateDisableBacktrackingSimulation(SymbolicRegexBuilder<TSet> builder, SymbolicRegexNode<TSet> child) =>

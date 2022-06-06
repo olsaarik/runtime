@@ -11,7 +11,7 @@ namespace System.Text.RegularExpressions.Symbolic
         /// <summary>Indicates a match was found but without meaningful details about where.</summary>
         internal static SymbolicMatch MatchExists => new SymbolicMatch(0, 0);
 
-        public SymbolicMatch(int index, int length, int[]? captureStarts = null, int[]? captureEnds = null)
+        public SymbolicMatch(int index, int length, ArraySegment<int>? captureStarts = null, ArraySegment<int>? captureEnds = null)
         {
             Index = index;
             Length = length;
@@ -29,12 +29,12 @@ namespace System.Text.RegularExpressions.Symbolic
         /// Array of capture start indices for each capture group. Each is a valid index into the input if the group
         /// was captured, or -1 otherwise.
         /// </summary>
-        public readonly int[]? CaptureStarts { get; }
+        public readonly ArraySegment<int>? CaptureStarts { get; }
 
         /// <summary>
         /// Array of capture end indices for each capture group. Each is a valid index into the input and greater than
         /// the corresponding start position if the group was captured, or -1 otherwise.
         /// </summary>
-        public readonly int[]? CaptureEnds { get; }
+        public readonly ArraySegment<int>? CaptureEnds { get; }
     }
 }

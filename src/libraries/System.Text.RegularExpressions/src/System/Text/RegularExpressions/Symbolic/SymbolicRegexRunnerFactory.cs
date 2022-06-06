@@ -84,20 +84,17 @@ namespace System.Text.RegularExpressions.Symbolic
                     if (_mode == RegexRunnerMode.FullMatchRequired && pos.CaptureStarts != null)
                     {
                         Debug.Assert(pos.CaptureEnds != null);
-                        Debug.Assert(pos.CaptureStarts.Length == pos.CaptureEnds.Length);
-                        for (int cap = 0; cap < pos.CaptureStarts.Length; ++cap)
+                        Debug.Assert(pos.CaptureStarts.Value.Count == pos.CaptureEnds.Value.Count);
+                        for (int cap = 1; cap < pos.CaptureStarts.Value.Count; ++cap)
                         {
-                            if (pos.CaptureStarts[cap] >= 0)
+                            if (pos.CaptureStarts.Value[cap] >= 0)
                             {
-                                Debug.Assert(pos.CaptureEnds[cap] >= pos.CaptureStarts[cap]);
-                                Capture(cap, pos.CaptureStarts[cap], pos.CaptureEnds[cap]);
+                                Debug.Assert(pos.CaptureEnds.Value[cap] >= pos.CaptureStarts.Value[cap]);
+                                Capture(cap, pos.CaptureStarts.Value[cap], pos.CaptureEnds.Value[cap]);
                             }
                         }
                     }
-                    else
-                    {
-                        Capture(0, start, end);
-                    }
+                    Capture(0, start, end);
                     runtextpos = end;
                 }
                 else
