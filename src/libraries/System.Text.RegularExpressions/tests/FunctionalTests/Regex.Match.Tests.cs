@@ -1269,6 +1269,43 @@ namespace System.Text.RegularExpressions.Tests
             Assert.InRange(sw.Elapsed.TotalSeconds, 0, 10); // arbitrary upper bound that should be well above what's needed with a 1ms timeout
         }
 
+        [Fact]
+        public void Match_Nonbacktracking_TimeoutBoundaryTest()
+        {
+            Regex timeoutPattern = new Regex("a*", RegexHelpers.RegexOptionNonBacktracking, TimeSpan.FromTicks(1));
+            // Function for comparing the left hand side to the internal chars matched per timeout check in NonBacktracking
+            int IsCharsPerTimeoutCheck(int candidate, int dummy)
+            {
+                Assert.Equal(-1, dummy);
+                try
+                {
+                    timeoutPattern.Match(new string('a', candidate));
+                    try
+                    {
+                        timeoutPattern.Match(new string('a', candidate + 1));
+                    }
+                    catch (RegexMatchTimeoutException)
+                    {
+                        // Only the higher check timed out, number of chars per timeout check found
+                        return 0;
+                    }
+                    // Neither check timed out, chars per timeout check is higher
+                    return -1;
+                }
+                catch (RegexMatchTimeoutException)
+                {
+                    // Candidate times out, chars per timeout check is lower
+                    return 1;
+                }
+            }
+            int charsPerTimeoutCheck = Array.BinarySearch(Enumerable.Range(0, 2048).ToArray(), -1, Comparer<int>.Create(IsCharsPerTimeoutCheck));
+            Assert.Equal(1000, charsPerTimeoutCheck);
+
+            Regex testPattern = new Regex("^a*b$", RegexHelpers.RegexOptionNonBacktracking, TimeSpan.FromHours(1));
+            string input = string.Concat(new string('a', charsPerTimeoutCheck - 1), "bc");
+            Assert.False(testPattern.IsMatch(input));
+        }
+
         public static IEnumerable<object[]> Match_Advanced_TestData()
         {
             foreach (RegexEngine engine in RegexHelpers.AvailableEngines)
