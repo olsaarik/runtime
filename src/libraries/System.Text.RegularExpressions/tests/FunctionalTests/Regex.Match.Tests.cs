@@ -1272,6 +1272,9 @@ namespace System.Text.RegularExpressions.Tests
         [Fact]
         public void Match_Nonbacktracking_TimeoutBoundaryTest()
         {
+            // First figure out how many characters the innermost matching loop of NonBacktracking looks at between
+            // timeout checks. This makes the test more robust, as the value isn't exposed and we'd have to set it as
+            // a constant here.
             Regex timeoutPattern = new Regex("a*", RegexHelpers.RegexOptionNonBacktracking, TimeSpan.FromTicks(1));
             // Function for comparing the left hand side to the internal chars matched per timeout check in NonBacktracking
             int IsCharsPerTimeoutCheck(int candidate, int dummy)
@@ -1299,8 +1302,9 @@ namespace System.Text.RegularExpressions.Tests
                 }
             }
             int charsPerTimeoutCheck = Array.BinarySearch(Enumerable.Range(0, 2048).ToArray(), -1, Comparer<int>.Create(IsCharsPerTimeoutCheck));
-            Assert.Equal(1000, charsPerTimeoutCheck);
+            Assert.True(charsPerTimeoutCheck >= 0);
 
+            // Now that the limit is known, do the actual test
             Regex testPattern = new Regex("^a*b$", RegexHelpers.RegexOptionNonBacktracking, TimeSpan.FromHours(1));
             string input = string.Concat(new string('a', charsPerTimeoutCheck - 1), "bc");
             Assert.False(testPattern.IsMatch(input));
