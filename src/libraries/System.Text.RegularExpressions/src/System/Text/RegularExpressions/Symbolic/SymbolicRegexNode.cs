@@ -688,6 +688,16 @@ namespace System.Text.RegularExpressions.Symbolic
                     }
                 }
 
+                // Rule: XY subsumes XY' if Y subsumes Y'
+                if (left._kind == SymbolicRegexNodeKind.Concat && right._kind == SymbolicRegexNodeKind.Concat)
+                {
+                    Debug.Assert(left._left is not null && left._right is not null && right._left is not null && right._right is not null);
+                    if (left._left == right._left)
+                    {
+                        return left._right.Subsumes(builder, right._right, depth);
+                    }
+                }
+
                 // Rule: XY subsumes Y' if X is nullable and Y subsumes Y'
                 if (left._kind == SymbolicRegexNodeKind.Concat)
                 {
